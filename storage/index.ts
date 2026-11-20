@@ -1,5 +1,6 @@
 import { browser } from 'wxt/browser';
 import type { AppSettings, GreetingExample, UserProfile } from '../shared/types';
+import { migrateGreetingExample, migrateProfile, migrateSettings } from '../profile/manager';
 
 // Profile 与设置存 storage.local；API Key 默认存 storage.session，用户勾选“记住”时存 storage.local。
 // 只能在扩展页面（Side Panel / Options / Background）中调用；Content Script 不访问存储。
@@ -14,7 +15,7 @@ export const DEFAULT_SETTINGS: AppSettings = { activeProfileId: null, llm: null 
 export async function loadProfiles(): Promise<UserProfile[]> {
   const data = await browser.storage.local.get(KEY_PROFILES);
   const v = data[KEY_PROFILES];
-  return Array.isArray(v) ? (v as UserProfile[]) : [];
+  return Array.isArray(v) ? (v as UserProfile[]).map(migrateProfile) : [];
 }
 
 export async function saveProfiles(profiles: UserProfile[]): Promise<void> {
@@ -24,7 +25,7 @@ export async function saveProfiles(profiles: UserProfile[]): Promise<void> {
 export async function loadGreetingExamples(profileId: string): Promise<GreetingExample[]> {
   const key = GREETING_EXAMPLES_PREFIX + profileId;
   const data = await browser.storage.local.get(key);
-  return Array.isArray(data[key]) ? data[key] as GreetingExample[] : [];
+  return Array.isArray(data[key]) ? (data[key] as GreetingExample[]).map(migrateGreetingExample) : [];
 }
 
 /** 同一档案、同一职位只保留最新确认的版本。 */
@@ -35,7 +36,23 @@ export async function saveGreetingExample(example: GreetingExample): Promise<voi
     if (!profiles.some((p) => p.id === example.profileId)) throw new Error('档案已删除，无法保存样例');
     const examples = await loadGreetingExamples(example.profileId);
     const next = examples.filter((e) => e.jobFingerprint !== example.jobFingerprint);
-    await browser.storage.local.set({ [key]: [example, ...next] });
+    await browser.storage.local.set({ [key]: [migrateGreetingExample(example), ...next] });
+  });
+}
+
+/** 更新某条样例的元信息（如是否优先参考、适用岗位标签）。 */
+export async function updateGreetingExample(
+  profileId: string,
+  jobFingerprint: string,
+  patch: Partial<Pick<GreetingExample, 'preferred' | 'roleTags' | 'greeting'>>,
+): Promise<void> {
+  const key = GREETING_EXAMPLES_PREFIX + profileId;
+  await navigator.locks.request(key, async () => {
+    const examples = await loadGreetingExamples(profileId);
+    const next = examples.map((e) =>
+      e.jobFingerprint === jobFingerprint ? migrateGreetingExample({ ...e, ...patch }) : e,
+    );
+    await browser.storage.local.set({ [key]: next });
   });
 }
 
@@ -56,7 +73,7 @@ export async function removeGreetingExamples(profileId: string, jobFingerprint?:
 export async function loadSettings(): Promise<AppSettings> {
   const data = await browser.storage.local.get(KEY_SETTINGS);
   const v = data[KEY_SETTINGS] as Partial<AppSettings> | undefined;
-  return { ...DEFAULT_SETTINGS, ...(v ?? {}) };
+  return migrateSettings(v);
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {

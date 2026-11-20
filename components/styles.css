@@ -78,6 +78,15 @@ label.field > span { color: var(--muted); }
 
 .card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .card.active { border-color: var(--primary); }
+.card.soft { background: var(--bg-soft); }
+
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.wrap { flex-wrap: wrap; }
+button.small { padding: 3px 8px; font-size: 12px; }
+button.chip { padding: 3px 10px; font-size: 12px; border-radius: 14px; }
+button.chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.badge.info { color: #1565c0; background: #e3f2fd; }
+.compare-box { border: 1px dashed var(--primary); border-radius: 8px; padding: 8px 10px; background: #f4fbfb; }
 
 /* 按内容自动撑高（Chrome 123+；更早版本回退为固定行数） */
 textarea.autosize { field-sizing: content; min-height: 6em; max-height: 60vh; }

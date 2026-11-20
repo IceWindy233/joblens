@@ -1,13 +1,28 @@
 import { useState } from 'react';
 import { browser } from 'wxt/browser';
-import type { AnalysisResult, Job, JobState, MatchPoint, UserProfile } from '../../shared/types';
-import { RECOMMENDATION_LABEL } from '../../shared/types';
+import type {
+  AnalysisResult,
+  EffectiveGreetingConfig,
+  GreetingCheckIssue,
+  Job,
+  JobState,
+  MatchPoint,
+  UserProfile,
+} from '../../shared/types';
+import {
+  EVIDENCE_STATUS_LABEL,
+  RECOMMENDATION_LABEL,
+  REQUIREMENT_CATEGORY_LABEL,
+} from '../../shared/types';
 import { ERROR_MESSAGES, type AppErrorCode } from '../../shared/errors';
+import { parseListInput } from '../../profile/manager';
 import { saveGreetingExample, updateSettings } from '../../storage';
 import { useAppData } from '../../components/useAppData';
+import { formatPreferencesSummary } from '../options/GreetingRulesConfig';
 import { useActiveTabJob } from './useActiveTabJob';
 import { useAnalysis } from './useAnalysis';
 import { GREETING_EXCERPT_LIMIT } from '../../analysis/greeting-examples';
+import type { GenerateGreetingOutput } from '../../analysis/analyze';
 
 const JOB_ERROR_TEXT: Record<string, string> = {
   UNSUPPORTED_PAGE: '当前页面不支持读取职位，请打开 BOSS 直聘职位页',
@@ -25,7 +40,7 @@ export default function App() {
   const { jobState, refresh, requestSnapshot } = useActiveTabJob();
   const job = jobState?.status === 'ready' ? jobState.job : null;
   const profile = data.profiles.find((p) => p.id === data.settings.activeProfileId) ?? null;
-  const analysis = useAnalysis(job, profile);
+  const analysis = useAnalysis(job, profile, data.settings);
 
   // 配置就绪检查
   let configIssue: AppErrorCode | 'NO_PROFILE' | null = null;
@@ -57,9 +72,11 @@ export default function App() {
 
       <JobSection state={jobState} onRefresh={refresh} />
 
-      <div className="section">
+      <div className="section stack">
         {analysis.view.kind === 'running' ? (
-          <button className="block" onClick={analysis.cancel}>分析中…（点击取消）</button>
+          <button className="block" onClick={analysis.cancel}>
+            {analysis.view.phase === 'greeting' ? '撰写打招呼语中…（点击取消）' : '分析岗位匹配度中…（点击取消）'}
+          </button>
         ) : (
           <button
             className="primary block"
@@ -68,10 +85,10 @@ export default function App() {
               if (data.settings.llm && data.apiKey) void analysis.start(data.settings.llm, data.apiKey);
             }}
           >
-            {analysis.view.kind === 'done' ? '重新分析' : '分析当前职位'}
+            {analysis.view.kind === 'done' ? '重新分析职位（完整两阶段）' : '分析当前职位'}
           </button>
         )}
-        <p className="muted">仅在点击时调用模型；职位内容、档案摘要及选中的历史样例会发送给你配置的模型服务商。</p>
+        <p className="muted">仅在点击时调用模型；职位内容、档案摘要/事实及选中的历史样例会发送给你配置的模型服务商。</p>
       </div>
 
       {analysis.view.kind === 'error' && (
@@ -86,7 +103,28 @@ export default function App() {
           job={job}
           result={analysis.view.result}
           greeting={analysis.greeting ?? analysis.view.result.greeting}
+          isEdited={analysis.isEdited}
+          previousGreeting={analysis.previousGreeting}
+          pendingGreeting={analysis.pendingGreeting}
+          temporaryRule={analysis.temporaryRule}
+          useExamplesOverride={analysis.useExamplesOverride}
+          effectiveConfig={analysis.effectiveConfig}
+          analysisStale={analysis.analysisStale}
+          greetingStale={analysis.greetingStale}
+          canRegenerate={canAnalyze}
+          currentModel={data.settings.llm?.model}
           onGreetingChange={analysis.setGreeting}
+          onTemporaryRuleChange={analysis.setTemporaryRule}
+          onUseExamplesChange={analysis.setUseExamplesOverride}
+          onRegenerateGreeting={() => {
+            if (data.settings.llm && data.apiKey) void analysis.regenerateGreeting(data.settings.llm, data.apiKey);
+          }}
+          onReanalyze={() => {
+            if (data.settings.llm && data.apiKey) void analysis.start(data.settings.llm, data.apiKey);
+          }}
+          onAcceptPending={analysis.acceptPendingGreeting}
+          onDiscardPending={analysis.discardPendingGreeting}
+          onRestorePrevious={analysis.restorePreviousGreeting}
         />
       )}
 
@@ -208,7 +246,19 @@ function Points({ items, empty }: { items: MatchPoint[]; empty: string }) {
     <ul className="points">
       {items.map((p, i) => (
         <li key={i}>
-          <span className="req">{p.requirement}</span>
+          <div className="row wrap">
+            <span className="req">{p.requirement}</span>
+            {p.category && (
+              <span className={`badge ${p.category === 'hard' ? 'warn' : ''}`}>
+                {REQUIREMENT_CATEGORY_LABEL[p.category]}
+              </span>
+            )}
+            {p.status && (
+              <span className={`badge ${p.status === 'confirmed_lacking' ? 'err' : p.status === 'matched' ? 'ok' : ''}`}>
+                {EVIDENCE_STATUS_LABEL[p.status]}
+              </span>
+            )}
+          </div>
           <div className="small">{p.evidence}</div>
         </li>
       ))}
@@ -216,22 +266,83 @@ function Points({ items, empty }: { items: MatchPoint[]; empty: string }) {
   );
 }
 
+function IssueNotices({
+  issues,
+  details,
+}: {
+  issues: string[];
+  details?: GreetingCheckIssue[];
+}) {
+  if (!issues.length && !details?.length) return null;
+  const factIssues = details ? details.filter((d) => d.kind === 'fact').map((d) => d.message) : [];
+  const otherIssues = details ? details.filter((d) => d.kind !== 'fact').map((d) => d.message) : issues;
+
+  return (
+    <div className="stack">
+      {factIssues.length > 0 && (
+        <div className="notice warn">事实待核对：{factIssues.join('；')}</div>
+      )}
+      {otherIssues.length > 0 && (
+        <div className="notice warn">风格/结构提示：{otherIssues.join('；')}</div>
+      )}
+    </div>
+  );
+}
+
 function ResultSection({
   job,
   result,
   greeting,
+  isEdited,
+  previousGreeting,
+  pendingGreeting,
+  temporaryRule,
+  useExamplesOverride,
+  effectiveConfig,
+  analysisStale,
+  greetingStale,
+  canRegenerate,
+  currentModel,
   onGreetingChange,
+  onTemporaryRuleChange,
+  onUseExamplesChange,
+  onRegenerateGreeting,
+  onReanalyze,
+  onAcceptPending,
+  onDiscardPending,
+  onRestorePrevious,
 }: {
   job: Job;
   result: AnalysisResult;
   greeting: string;
+  isEdited: boolean;
+  previousGreeting: string | null;
+  pendingGreeting: GenerateGreetingOutput | null;
+  temporaryRule: string;
+  useExamplesOverride: boolean | undefined;
+  effectiveConfig: EffectiveGreetingConfig | null;
+  analysisStale: boolean;
+  greetingStale: boolean;
+  canRegenerate: boolean;
+  currentModel?: string;
   onGreetingChange: (t: string) => void;
+  onTemporaryRuleChange: (r: string) => void;
+  onUseExamplesChange: (enabled: boolean | undefined) => void;
+  onRegenerateGreeting: () => void;
+  onReanalyze: () => void;
+  onAcceptPending: () => void;
+  onDiscardPending: () => void;
+  onRestorePrevious: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [savingExample, setSavingExample] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [examplePreferred, setExamplePreferred] = useState(false);
+  const [exampleRoleTags, setExampleRoleTags] = useState(job.title);
   const badge =
     result.recommendation === 'recommended' ? 'ok' : result.recommendation === 'consider' ? 'warn' : 'err';
+
+  const effectiveUseExamples = useExamplesOverride ?? effectiveConfig?.preferences.useExamples ?? true;
 
   const copy = async () => {
     await navigator.clipboard.writeText(greeting);
@@ -253,6 +364,8 @@ function ResultSection({
         jobExcerpt: job.description.slice(0, GREETING_EXCERPT_LIMIT),
         points: result.greetingPoints,
         greeting: text,
+        preferred: examplePreferred,
+        roleTags: parseListInput(exampleRoleTags),
         createdAt: new Date().toISOString(),
       });
       setSaveMessage({ text: '已保存为当前档案的样例', error: false });
@@ -266,6 +379,18 @@ function ResultSection({
   return (
     <>
       <div className="section stack">
+        {analysisStale && (
+          <div className="notice warn stack">
+            <div>
+              模型配置（原：{result.model}{currentModel ? ` → 现：${currentModel}` : ''}）、档案事实或选材配置已变更，下方展示的是旧配置下的结果。
+            </div>
+            <div>
+              <button className="small primary" disabled={!canRegenerate} onClick={onReanalyze}>
+                按当前配置重新分析
+              </button>
+            </div>
+          </div>
+        )}
         <div className="row">
           <span className="score">{result.matchScore}</span>
           <span className="muted">/100 辅助评分</span>
@@ -277,21 +402,97 @@ function ResultSection({
         <h3>主要差距</h3>
         <Points items={result.gaps} empty="未列出明显差距" />
         <div className="muted">
-          评分由模型主观给出，仅供参考，不代表录用概率。模型：{result.model} ·{' '}
+          评分由模型主观给出，仅供辅助判断，不代表录用概率。模型：{result.model} ·{' '}
           {new Date(result.createdAt).toLocaleTimeString()}
         </div>
       </div>
+
       <div className="section stack">
-        <h3>打招呼语</h3>
+        <div className="row between wrap">
+          <h3>打招呼语</h3>
+          {isEdited && <span className="badge info">已手动编辑（重生成不会覆盖）</span>}
+        </div>
+
+        {greetingStale && (
+          <div className="notice warn">
+            写作规则、单次要求或参考样例已变更；点击下方“仅重新生成打招呼语”可按新规则重写，无需重复分析 JD。
+          </div>
+        )}
+
         {result.greetingPoints.length > 0 && (
           <details>
-            <summary className="muted">本次使用的候选匹配事实</summary>
+            <summary className="muted">本次使用的候选匹配事实（{result.greetingPoints.length} 条）</summary>
             <ul className="points">{result.greetingPoints.map((p) => <li key={p}>{p}</li>)}</ul>
           </details>
         )}
-        {result.greetingIssues.length > 0 && (
-          <div className="notice warn">模型草稿待核对：{result.greetingIssues.join('；')}</div>
+
+        <details>
+          <summary className="muted">本次生效的写作规则与偏好</summary>
+          <div className="stack" style={{ marginTop: 6 }}>
+            {(effectiveConfig?.preferences ?? result.effectivePreferences) && (
+              <div className="small">
+                <strong>生效参数：</strong>
+                {formatPreferencesSummary((effectiveConfig?.preferences ?? result.effectivePreferences)!)}
+              </div>
+            )}
+            <div className="pre jd-preview">
+              {(effectiveConfig?.combinedRulesText ?? result.effectiveRules) || '（未配置自定义规则，按默认自然风格与事实边界生成）'}
+            </div>
+          </div>
+        </details>
+
+        <IssueNotices issues={result.greetingIssues} details={result.greetingIssueDetails} />
+
+        <label className="field">
+          <span>单次生成补充要求（仅作用于当前岗位，不修改全局或档案规则）</span>
+          <input
+            type="text"
+            value={temporaryRule}
+            placeholder="例：重点突出 Agent 编排经验，分 3 点列出，不超过 220 字"
+            onChange={(e) => onTemporaryRuleChange(e.target.value)}
+          />
+        </label>
+
+        <div className="row between wrap">
+          <label className="row small">
+            <input
+              type="checkbox"
+              checked={effectiveUseExamples}
+              onChange={(e) => onUseExamplesChange(e.target.checked)}
+            />
+            参考相似历史样例（仅学风格，不引入新事实）
+          </label>
+          <button
+            type="button"
+            className="small"
+            disabled={!canRegenerate}
+            onClick={onRegenerateGreeting}
+          >
+            仅重新生成打招呼语
+          </button>
+        </div>
+
+        {pendingGreeting && (
+          <div className="compare-box stack">
+            <div className="row between wrap">
+              <strong>新生成版本已就绪（未覆盖你当前编辑的内容）</strong>
+              <div className="row">
+                <button type="button" className="primary small" onClick={onAcceptPending}>
+                  采用新版本
+                </button>
+                <button type="button" className="small" onClick={onDiscardPending}>
+                  保留我的编辑
+                </button>
+              </div>
+            </div>
+            <IssueNotices
+              issues={pendingGreeting.greetingIssues}
+              details={pendingGreeting.greetingIssueDetails}
+            />
+            <div className="pre">{pendingGreeting.greeting}</div>
+          </div>
         )}
+
         <textarea
           aria-label="打招呼语"
           className="autosize"
@@ -303,7 +504,22 @@ function ResultSection({
             setSaveMessage(null);
           }}
         />
-        <div className="row">
+
+        {previousGreeting && (
+          <details>
+            <summary className="muted">查看上一版结果并对比</summary>
+            <div className="stack" style={{ marginTop: 6 }}>
+              <div className="pre jd-preview">{previousGreeting}</div>
+              <div>
+                <button type="button" className="small" onClick={onRestorePrevious}>
+                  恢复上一版到编辑框
+                </button>
+              </div>
+            </div>
+          </details>
+        )}
+
+        <div className="row wrap">
           <button className="primary" onClick={() => void copy()}>
             {copied ? '已复制' : '复制打招呼语'}
           </button>
@@ -311,8 +527,32 @@ function ResultSection({
             {savingExample ? '保存中…' : '保存为样例'}
           </button>
         </div>
+
+        <details>
+          <summary className="muted">保存样例设置（优先参考 / 适用岗位标签）</summary>
+          <div className="stack" style={{ marginTop: 6 }}>
+            <label className="row small">
+              <input
+                type="checkbox"
+                checked={examplePreferred}
+                onChange={(e) => setExamplePreferred(e.target.checked)}
+              />
+              设为当前档案的优先参考样例
+            </label>
+            <label className="field">
+              <span>适用岗位类型标签（顿号或逗号分隔）</span>
+              <input
+                type="text"
+                value={exampleRoleTags}
+                onChange={(e) => setExampleRoleTags(e.target.value)}
+                placeholder="例：AI Agent、智能体开发"
+              />
+            </label>
+          </div>
+        </details>
+
         {saveMessage && <div role="status" className={saveMessage.error ? 'notice err' : 'muted'}>{saveMessage.text}</div>}
-        <div className="muted">确认内容真实后可保存为样例；下次分析相近岗位时仅作为写法参考。</div>
+        <div className="muted">本地检查不能代替全面事实核验，确认内容真实后再复制使用或保存为样例。</div>
         <div className="muted">插件不会自动发送消息，请自行粘贴到聊天框。</div>
       </div>
     </>

@@ -1,4 +1,4 @@
-import type { MatchPoint, Recommendation } from '../shared/types';
+import type { EvidenceStatus, MatchPoint, Recommendation, RequirementCategory } from '../shared/types';
 import { isRecord } from '../shared/json';
 
 // 阶段 A 模型只返回六个业务字段；校验类型、范围与评分/结论一致性。
@@ -12,9 +12,16 @@ export interface AnalysisPayload {
   greetingPoints: string[];
 }
 
+export interface ValidateAnalysisOptions {
+  maxGreetingPoints?: number;
+}
+
 export const MAX_POINTS = 8;
 export const MAX_GREETING_POINTS = 4;
+export const MAX_CONFIGURABLE_GREETING_POINTS = 8;
 const RECS: readonly Recommendation[] = ['recommended', 'consider', 'not_recommended'];
+const CATEGORIES: readonly RequirementCategory[] = ['core', 'general', 'bonus', 'focus', 'hard'];
+const STATUSES: readonly EvidenceStatus[] = ['matched', 'partial', 'not_shown', 'confirmed_lacking'];
 
 export type ValidationResult =
   | { ok: true; value: AnalysisPayload }
@@ -33,14 +40,31 @@ function parsePoints(v: unknown, name: string, errors: string[]): MatchPoint[] {
     }
     const requirement = p.requirement.trim();
     const evidence = p.evidence.trim();
-    if (requirement || evidence) out.push({ requirement, evidence });
+    if (requirement || evidence) {
+      const point: MatchPoint = { requirement, evidence };
+      if (typeof p.category === 'string' && (CATEGORIES as readonly string[]).includes(p.category)) {
+        point.category = p.category as RequirementCategory;
+      }
+      if (typeof p.status === 'string' && (STATUSES as readonly string[]).includes(p.status)) {
+        point.status = p.status as EvidenceStatus;
+      }
+      out.push(point);
+    }
   });
   return out.slice(0, MAX_POINTS);
 }
 
-export function validateAnalysisPayload(raw: unknown): ValidationResult {
+export function validateAnalysisPayload(
+  raw: unknown,
+  options: ValidateAnalysisOptions = {},
+): ValidationResult {
   const errors: string[] = [];
   if (!isRecord(raw)) return { ok: false, errors: ['输出不是 JSON 对象'] };
+
+  const maxGreetingPoints = Math.min(
+    MAX_CONFIGURABLE_GREETING_POINTS,
+    Math.max(1, Math.round(options.maxGreetingPoints ?? MAX_GREETING_POINTS)),
+  );
 
   let score = raw.matchScore;
   if (typeof score === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(score)) score = Number(score);
@@ -65,7 +89,9 @@ export function validateAnalysisPayload(raw: unknown): ValidationResult {
     errors.push('greetingPoints 必须是字符串数组');
   } else {
     greetingPoints = [...new Set(points.map((p) => p.trim()).filter(Boolean))];
-    if (greetingPoints.length > MAX_GREETING_POINTS) errors.push('greetingPoints 最多 4 条');
+    if (greetingPoints.length > maxGreetingPoints) {
+      errors.push(`greetingPoints 最多 ${maxGreetingPoints} 条`);
+    }
   }
 
   const strengths = parsePoints(raw.strengths, 'strengths', errors);
