@@ -4,7 +4,7 @@ import { buildAnalysisMessages } from '../analysis/prompts';
 import { validateAnalysisPayload } from '../analysis/schema';
 import { parseModelJSON } from '../shared/json';
 import { AppError } from '../shared/errors';
-import type { Job, LLMConfig, UserProfile } from '../shared/types';
+import type { GreetingExample, Job, LLMConfig, UserProfile } from '../shared/types';
 
 const job: Job = {
   source: 'boss',
@@ -32,6 +32,7 @@ const profile: UserProfile = {
 };
 
 const config: LLMConfig = { baseURL: 'https://api.example.com/v1', model: 'm1' };
+const input = { job, profile, config, apiKey: 'sk-1', examples: [] };
 
 const payload = {
   matchScore: 78,
@@ -39,14 +40,20 @@ const payload = {
   summary: '较匹配',
   strengths: [{ requirement: 'React 开发', evidence: 'React 组件库开发' }],
   gaps: [{ requirement: 'Vue 项目经验', evidence: '简历未体现' }],
-  greeting: '您好……',
+  greetingPoints: ['参与开发了包含 10 个组件的 React 组件库', '为组件库编写了使用文档'],
 };
 
-function fakeFetch(content: string, status = 200): typeof fetch {
-  return (async () =>
-    new Response(JSON.stringify(status === 200 ? { choices: [{ message: { content } }] } : { error: { message: content } }), {
-      status,
-    })) as typeof fetch;
+const greeting = '您好，我参与过 React 组件库开发和文档编写，希望进一步沟通！';
+
+function modelReplies(...replies: string[]) {
+  const requests: { messages: { role: string; content: string }[]; response_format?: { type: string } }[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    requests.push(JSON.parse(init?.body as string));
+    const content = replies.shift();
+    if (content === undefined) throw new Error('Unexpected model request');
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }));
+  };
+  return { requests, fetchImpl };
 }
 
 describe('parseModelJSON', () => {
@@ -67,7 +74,8 @@ describe('validateAnalysisPayload', () => {
     [{ ...payload, matchScore: -1 }, '0~100'],
     [{ ...payload, matchScore: 'high' }, '数字'],
     [{ ...payload, recommendation: 'yes' }, 'recommendation'],
-    [{ ...payload, greeting: '' }, 'greeting'],
+    [{ ...payload, greetingPoints: '您好' }, 'greetingPoints'],
+    [{ ...payload, greetingPoints: ['甲', '乙', '丙', '丁', '戊'] }, '最多 4 条'],
     [{ ...payload, strengths: 'x' }, 'strengths'],
     [{ ...payload, gaps: [{ requirement: 1 }] }, 'gaps[0]'],
     [{ ...payload, recommendation: 'recommended', matchScore: 40 }, '≥ 60'],
@@ -98,29 +106,86 @@ describe('buildAnalysisMessages', () => {
 });
 
 describe('analyzeJob', () => {
-  it('fills metadata from caller, not from the model', async () => {
-    const r = await analyzeJob(job, profile, config, 'sk-1', undefined, {
-      fetchImpl: fakeFetch(JSON.stringify({ ...payload, profileId: 'evil', jobFingerprint: 'evil' })),
-      now: () => new Date('2026-02-02T00:00:00Z'),
-    });
+  it('preserves caller metadata and uses only selected evidence in a separate writing request', async () => {
+    const { requests, fetchImpl } = modelReplies(
+      JSON.stringify({ ...payload, greeting: '不要使用这条', profileId: 'evil', jobFingerprint: 'evil' }),
+      greeting,
+    );
+    const r = await analyzeJob(input, { fetchImpl, now: () => new Date('2026-02-02T00:00:00Z') });
     expect(r).toMatchObject({
       jobFingerprint: 'boss:id:x',
       profileId: 'pa',
       profileVersion: 3,
       model: 'm1',
       matchScore: 78,
+      gaps: payload.gaps,
+      greeting,
+      greetingIssues: [],
       createdAt: '2026-02-02T00:00:00.000Z',
     });
+    expect(requests).toHaveLength(2);
+    const [analysis, writing] = requests;
+    expect(analysis!.response_format).toEqual({ type: 'json_object' });
+    expect(writing!.response_format).toBeUndefined();
+    const prompt = writing!.messages.map((m) => m.content).join('\n');
+    expect(prompt).toContain(payload.greetingPoints[0]);
+    expect(prompt).not.toMatch(/Vue|RAW-RESUME-SECRET|不要使用这条/);
+  });
+
+  it('uses at most three similar examples from the current profile in the writing request only', async () => {
+    const sample: GreetingExample = {
+      profileId: profile.id,
+      jobFingerprint: 'other-1',
+      jobTitle: job.title,
+      company: '',
+      jobExcerpt: '负责页面开发。',
+      points: ['参与表单开发'],
+      greeting: '样例甲',
+      createdAt: '2026-01-04T00:00:00Z',
+    };
+    const examples = [
+      { ...sample, profileId: 'pb', jobFingerprint: job.fingerprint, greeting: '其他档案' },
+      { ...sample, jobFingerprint: 'unrelated', jobTitle: '宠物美容', jobExcerpt: '洗澡修剪造型', greeting: '无关样例' },
+      { ...sample, jobFingerprint: 'other-4', greeting: '旧样例', createdAt: '2026-01-01T00:00:00Z' },
+      { ...sample, jobFingerprint: 'other-3', greeting: '样例丙', createdAt: '2026-01-02T00:00:00Z' },
+      sample,
+      { ...sample, jobFingerprint: 'other-2', greeting: '样例乙', createdAt: '2026-01-03T00:00:00Z' },
+    ];
+    const { requests, fetchImpl } = modelReplies(JSON.stringify(payload), greeting);
+    await analyzeJob({ ...input, examples }, { fetchImpl });
+    expect(requests[0]!.messages[1]!.content).not.toMatch(/样例甲|参与表单开发/);
+    const text = requests[1]!.messages[1]!.content;
+    expect(text).toMatch(/样例甲[\s\S]*样例乙[\s\S]*样例丙/);
+    expect(text).toContain('参与表单开发');
+    expect(text).not.toMatch(/其他档案|无关样例|旧样例/);
+  });
+
+  it('rewrites only the greeting once when format and claim numbers fail checks', async () => {
+    const draft = '打招呼语：\n我有 １ 年经验。';
+    const { requests, fetchImpl } = modelReplies(JSON.stringify(payload), draft, greeting);
+    const result = await analyzeJob(input, { fetchImpl });
+    expect(result).toMatchObject({ greeting, greetingIssues: [], matchScore: 78 });
+    expect(requests).toHaveLength(3);
+    const revision = requests[2]!.messages;
+    expect(revision.at(-2)?.content).toBe(draft);
+    expect(revision.at(-1)?.content).toMatch(/换行[\s\S]*标题[\s\S]*数字（1）/);
+  });
+
+  it('preserves analysis and flags a non-empty draft that still fails after rewriting', async () => {
+    const revision = '我有 99 年企业开发经验。';
+    const { requests, fetchImpl } = modelReplies(JSON.stringify({ ...payload, greetingPoints: [] }), '', revision);
+    const result = await analyzeJob(input, { fetchImpl });
+    expect(result).toMatchObject({ greeting: revision, matchScore: 78, greetingPoints: [] });
+    expect(result.greetingIssues[0]).toContain('数字（99）');
+    expect(requests).toHaveLength(3);
   });
 
   it('rejects invalid model output', async () => {
     await expect(
-      analyzeJob(job, profile, config, 'sk-1', undefined, { fetchImpl: fakeFetch('抱歉我无法完成') }),
+      analyzeJob(input, modelReplies('抱歉我无法完成')),
     ).rejects.toMatchObject({ code: 'LLM_BAD_OUTPUT' });
     await expect(
-      analyzeJob(job, profile, config, 'sk-1', undefined, {
-        fetchImpl: fakeFetch(JSON.stringify({ ...payload, recommendation: 'recommended', matchScore: 10 })),
-      }),
+      analyzeJob(input, modelReplies(JSON.stringify({ ...payload, recommendation: 'recommended', matchScore: 10 }))),
     ).rejects.toBeInstanceOf(AppError);
   });
 

@@ -13,6 +13,7 @@ import {
   validateProfile,
 } from '../../profile/manager';
 import { loadProfiles, saveProfiles, updateSettings } from '../../storage';
+import { GreetingExamples } from './GreetingExamples';
 
 interface Props {
   existing: UserProfile | null;
@@ -176,7 +177,7 @@ export function ProfileEditor({ existing, settings, apiKey, onDone }: Props) {
       </label>
       <div className="field">
         <div className="row between">
-          <span>打招呼语规则（可追加自己的专属用语、需要/避免提及的项目等）</span>
+          <span>打招呼语规则（可设置岗位差异、专属用语和固定结尾）</span>
           <button
             type="button"
             className="link small"
@@ -189,8 +190,10 @@ export function ProfileEditor({ existing, settings, apiKey, onDone }: Props) {
             恢复默认规则
           </button>
         </div>
-        <textarea rows={12} value={rules} onChange={(e) => setRules(e.target.value)} />
+        <textarea aria-label="打招呼语规则" rows={5} value={rules} onChange={(e) => setRules(e.target.value)} />
       </div>
+
+      {existing && <GreetingExamples key={existing.id} profileId={existing.id} />}
 
       <div className="row">
         <button className="primary" disabled={busy} onClick={() => void onSave()}>保存档案</button>

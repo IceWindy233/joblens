@@ -77,8 +77,25 @@ export interface AnalysisResult {
   summary: string;
   strengths: MatchPoint[];
   gaps: MatchPoint[];
+  /** 阶段 A 选出的档案事实（优先 2–4 条；证据不足时可少选）。 */
+  greetingPoints: string[];
   greeting: string;
+  /** 定向重写后仍未通过的本地检查项；正常为空 */
+  greetingIssues: string[];
   model: string;
+  createdAt: string;
+}
+
+/** 用户确认过的打招呼语，按档案隔离，作为 Few-shot 参考。 */
+export interface GreetingExample {
+  profileId: string;
+  jobFingerprint: string;
+  jobTitle: string;
+  company: string;
+  /** JD 摘录（已截断），用于相似度选择与 Few-shot 上下文 */
+  jobExcerpt: string;
+  points: string[];
+  greeting: string;
   createdAt: string;
 }
 

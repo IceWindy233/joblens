@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppData } from '../../components/useAppData';
 import { removeProfile } from '../../profile/manager';
-import { clearAllData, loadProfiles, saveProfiles, updateSettings } from '../../storage';
+import { clearAllData, loadProfiles, removeGreetingExamples, saveProfiles, updateSettings } from '../../storage';
 import { ModelSettings } from './ModelSettings';
 import { ProfileEditor } from './ProfileEditor';
 
@@ -14,16 +14,17 @@ export default function App() {
   if (!data.loaded) return <div className="section muted">加载中…</div>;
 
   const onDelete = async (id: string, name: string) => {
-    if (!window.confirm(`确定删除档案“${name}”？此操作不可恢复，不会影响其他档案。`)) return;
+    if (!window.confirm(`确定删除档案“${name}”及其打招呼语样例？此操作不可恢复，不会影响其他档案。`)) return;
     const list = await loadProfiles();
     const r = removeProfile(list, id, data.settings.activeProfileId);
     await saveProfiles(r.profiles);
+    await removeGreetingExamples(id);
     await updateSettings({ activeProfileId: r.activeProfileId });
     if (editing?.mode === 'edit' && editing.id === id) setEditing(null);
   };
 
   const onClearAll = async () => {
-    if (!window.confirm('确定清除全部本地档案、模型设置与 API Key？')) return;
+    if (!window.confirm('确定清除全部本地档案、打招呼语样例、模型设置与 API Key？')) return;
     await clearAllData();
     setEditing(null);
   };
@@ -91,7 +92,7 @@ export default function App() {
       <div className="section stack">
         <h2>数据与隐私</h2>
         <p className="muted">
-          远程 API 服务商会接收到职位内容与个人档案摘要，是否保留及如何处理取决于该服务商的政策。分析时不会发送原始简历全文。
+          远程 API 服务商会接收到职位内容、个人档案摘要和选中的打招呼语样例，是否保留及如何处理取决于该服务商的政策。分析时不会发送原始简历全文。
           插件不读取或保存招聘平台的 Cookie、密码，不会自动发送消息或投递。
         </p>
         <div>

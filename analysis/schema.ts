@@ -1,7 +1,7 @@
 import type { MatchPoint, Recommendation } from '../shared/types';
 import { isRecord } from '../shared/json';
 
-// 模型只返回六个业务字段；校验类型、范围与评分/结论一致性。
+// 阶段 A 模型只返回六个业务字段；校验类型、范围与评分/结论一致性。
 
 export interface AnalysisPayload {
   matchScore: number;
@@ -9,10 +9,11 @@ export interface AnalysisPayload {
   summary: string;
   strengths: MatchPoint[];
   gaps: MatchPoint[];
-  greeting: string;
+  greetingPoints: string[];
 }
 
 export const MAX_POINTS = 8;
+export const MAX_GREETING_POINTS = 4;
 const RECS: readonly Recommendation[] = ['recommended', 'consider', 'not_recommended'];
 
 export type ValidationResult =
@@ -57,8 +58,15 @@ export function validateAnalysisPayload(raw: unknown): ValidationResult {
 
   const summary = typeof raw.summary === 'string' ? raw.summary.trim() : '';
   if (!summary) errors.push('summary 不能为空');
-  const greeting = typeof raw.greeting === 'string' ? raw.greeting.trim() : '';
-  if (!greeting) errors.push('greeting 不能为空');
+
+  const points = raw.greetingPoints;
+  let greetingPoints: string[] = [];
+  if (!Array.isArray(points) || !points.every((p) => typeof p === 'string')) {
+    errors.push('greetingPoints 必须是字符串数组');
+  } else {
+    greetingPoints = [...new Set(points.map((p) => p.trim()).filter(Boolean))];
+    if (greetingPoints.length > MAX_GREETING_POINTS) errors.push('greetingPoints 最多 4 条');
+  }
 
   const strengths = parsePoints(raw.strengths, 'strengths', errors);
   const gaps = parsePoints(raw.gaps, 'gaps', errors);
@@ -78,7 +86,7 @@ export function validateAnalysisPayload(raw: unknown): ValidationResult {
       summary,
       strengths,
       gaps,
-      greeting,
+      greetingPoints,
     },
   };
 }

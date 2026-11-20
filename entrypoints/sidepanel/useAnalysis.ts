@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AnalysisResult, Job, LLMConfig, UserProfile } from '../../shared/types';
 import { AppError, redactSecret, toAppError } from '../../shared/errors';
 import { analyzeJob, resultKey } from '../../analysis/analyze';
+import { loadGreetingExamples } from '../../storage';
 
 export type AnalysisView =
   | { kind: 'none' }
@@ -51,7 +52,8 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null) {
       errors.current.delete(k);
       rerender();
       try {
-        const result = await analyzeJob(job, profile, config, apiKey, controller.signal);
+        const examples = await loadGreetingExamples(profile.id);
+        const result = await analyzeJob({ job, profile, examples, config, apiKey, signal: controller.signal });
         results.current.set(k, result);
         greetings.current.delete(k);
       } catch (err) {

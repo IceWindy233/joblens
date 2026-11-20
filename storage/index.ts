@@ -1,5 +1,5 @@
 import { browser } from 'wxt/browser';
-import type { AppSettings, UserProfile } from '../shared/types';
+import type { AppSettings, GreetingExample, UserProfile } from '../shared/types';
 
 // Profile 与设置存 storage.local；API Key 默认存 storage.session，用户勾选“记住”时存 storage.local。
 // 只能在扩展页面（Side Panel / Options / Background）中调用；Content Script 不访问存储。
@@ -7,6 +7,7 @@ import type { AppSettings, UserProfile } from '../shared/types';
 const KEY_PROFILES = 'profiles';
 const KEY_SETTINGS = 'settings';
 const KEY_API_KEY = 'apiKey';
+const GREETING_EXAMPLES_PREFIX = 'greetingExamples:';
 
 export const DEFAULT_SETTINGS: AppSettings = { activeProfileId: null, llm: null };
 
@@ -18,6 +19,38 @@ export async function loadProfiles(): Promise<UserProfile[]> {
 
 export async function saveProfiles(profiles: UserProfile[]): Promise<void> {
   await browser.storage.local.set({ [KEY_PROFILES]: profiles });
+}
+
+export async function loadGreetingExamples(profileId: string): Promise<GreetingExample[]> {
+  const key = GREETING_EXAMPLES_PREFIX + profileId;
+  const data = await browser.storage.local.get(key);
+  return Array.isArray(data[key]) ? data[key] as GreetingExample[] : [];
+}
+
+/** 同一档案、同一职位只保留最新确认的版本。 */
+export async function saveGreetingExample(example: GreetingExample): Promise<void> {
+  const key = GREETING_EXAMPLES_PREFIX + example.profileId;
+  await navigator.locks.request(key, async () => {
+    const profiles = await loadProfiles();
+    if (!profiles.some((p) => p.id === example.profileId)) throw new Error('档案已删除，无法保存样例');
+    const examples = await loadGreetingExamples(example.profileId);
+    const next = examples.filter((e) => e.jobFingerprint !== example.jobFingerprint);
+    await browser.storage.local.set({ [key]: [example, ...next] });
+  });
+}
+
+export async function removeGreetingExamples(profileId: string, jobFingerprint?: string): Promise<void> {
+  const key = GREETING_EXAMPLES_PREFIX + profileId;
+  await navigator.locks.request(key, async () => {
+    if (jobFingerprint === undefined) {
+      await browser.storage.local.remove(key);
+      return;
+    }
+    const examples = await loadGreetingExamples(profileId);
+    const next = examples.filter((e) => e.jobFingerprint !== jobFingerprint);
+    if (next.length) await browser.storage.local.set({ [key]: next });
+    else await browser.storage.local.remove(key);
+  });
 }
 
 export async function loadSettings(): Promise<AppSettings> {

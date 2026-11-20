@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { browser } from 'wxt/browser';
-import type { JobState, MatchPoint, UserProfile } from '../../shared/types';
+import type { AnalysisResult, Job, JobState, MatchPoint, UserProfile } from '../../shared/types';
 import { RECOMMENDATION_LABEL } from '../../shared/types';
 import { ERROR_MESSAGES, type AppErrorCode } from '../../shared/errors';
-import { updateSettings } from '../../storage';
+import { saveGreetingExample, updateSettings } from '../../storage';
 import { useAppData } from '../../components/useAppData';
 import { useActiveTabJob } from './useActiveTabJob';
 import { useAnalysis } from './useAnalysis';
+import { GREETING_EXCERPT_LIMIT } from '../../analysis/greeting-examples';
 
 const JOB_ERROR_TEXT: Record<string, string> = {
   UNSUPPORTED_PAGE: '当前页面不支持读取职位，请打开 BOSS 直聘职位页',
@@ -70,7 +71,7 @@ export default function App() {
             {analysis.view.kind === 'done' ? '重新分析' : '分析当前职位'}
           </button>
         )}
-        <p className="muted">仅在点击时调用模型；职位内容与档案摘要会发送给你配置的模型服务商。</p>
+        <p className="muted">仅在点击时调用模型；职位内容、档案摘要及选中的历史样例会发送给你配置的模型服务商。</p>
       </div>
 
       {analysis.view.kind === 'error' && (
@@ -79,8 +80,10 @@ export default function App() {
         </div>
       )}
 
-      {analysis.view.kind === 'done' && (
+      {job && analysis.view.kind === 'done' && (
         <ResultSection
+          key={JSON.stringify([job.fingerprint, analysis.view.result.profileId, analysis.view.result.profileVersion])}
+          job={job}
           result={analysis.view.result}
           greeting={analysis.greeting ?? analysis.view.result.greeting}
           onGreetingChange={analysis.setGreeting}
@@ -214,15 +217,19 @@ function Points({ items, empty }: { items: MatchPoint[]; empty: string }) {
 }
 
 function ResultSection({
+  job,
   result,
   greeting,
   onGreetingChange,
 }: {
-  result: import('../../shared/types').AnalysisResult;
+  job: Job;
+  result: AnalysisResult;
   greeting: string;
   onGreetingChange: (t: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [savingExample, setSavingExample] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<{ text: string; error: boolean } | null>(null);
   const badge =
     result.recommendation === 'recommended' ? 'ok' : result.recommendation === 'consider' ? 'warn' : 'err';
 
@@ -230,6 +237,30 @@ function ResultSection({
     await navigator.clipboard.writeText(greeting);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const saveExample = async () => {
+    const text = greeting.trim();
+    if (!text || savingExample) return;
+    setSavingExample(true);
+    setSaveMessage(null);
+    try {
+      await saveGreetingExample({
+        profileId: result.profileId,
+        jobFingerprint: job.fingerprint,
+        jobTitle: job.title,
+        company: job.company,
+        jobExcerpt: job.description.slice(0, GREETING_EXCERPT_LIMIT),
+        points: result.greetingPoints,
+        greeting: text,
+        createdAt: new Date().toISOString(),
+      });
+      setSaveMessage({ text: '已保存为当前档案的样例', error: false });
+    } catch (err) {
+      setSaveMessage({ text: `样例保存失败：${err instanceof Error ? err.message : String(err)}`, error: true });
+    } finally {
+      setSavingExample(false);
+    }
   };
 
   return (
@@ -252,10 +283,36 @@ function ResultSection({
       </div>
       <div className="section stack">
         <h3>打招呼语</h3>
-        <textarea className="autosize" rows={8} value={greeting} onChange={(e) => onGreetingChange(e.target.value)} />
-        <button className="primary" onClick={() => void copy()}>
-          {copied ? '已复制' : '复制打招呼语'}
-        </button>
+        {result.greetingPoints.length > 0 && (
+          <details>
+            <summary className="muted">本次使用的候选匹配事实</summary>
+            <ul className="points">{result.greetingPoints.map((p) => <li key={p}>{p}</li>)}</ul>
+          </details>
+        )}
+        {result.greetingIssues.length > 0 && (
+          <div className="notice warn">模型草稿待核对：{result.greetingIssues.join('；')}</div>
+        )}
+        <textarea
+          aria-label="打招呼语"
+          className="autosize"
+          rows={8}
+          value={greeting}
+          disabled={savingExample}
+          onChange={(e) => {
+            onGreetingChange(e.target.value);
+            setSaveMessage(null);
+          }}
+        />
+        <div className="row">
+          <button className="primary" onClick={() => void copy()}>
+            {copied ? '已复制' : '复制打招呼语'}
+          </button>
+          <button disabled={savingExample || !greeting.trim()} onClick={() => void saveExample()}>
+            {savingExample ? '保存中…' : '保存为样例'}
+          </button>
+        </div>
+        {saveMessage && <div role="status" className={saveMessage.error ? 'notice err' : 'muted'}>{saveMessage.text}</div>}
+        <div className="muted">确认内容真实后可保存为样例；下次分析相近岗位时仅作为写法参考。</div>
         <div className="muted">插件不会自动发送消息，请自行粘贴到聊天框。</div>
       </div>
     </>
