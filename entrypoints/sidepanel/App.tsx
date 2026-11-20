@@ -18,17 +18,33 @@ import { ERROR_MESSAGES, type AppErrorCode } from '../../shared/errors';
 import { parseListInput } from '../../profile/manager';
 import { saveGreetingExample, updateSettings } from '../../storage';
 import { useAppData } from '../../components/useAppData';
+import {
+  IconAlert,
+  IconBookmark,
+  IconCheck,
+  IconChevronDown,
+  IconCopy,
+  IconHistory,
+  IconInfo,
+  IconRefresh,
+  IconSettings,
+  IconSliders,
+  IconSparkles,
+  IconUser,
+  IconWand,
+  IconX,
+  ToggleSwitch,
+} from '../../components/Icons';
 import { formatPreferencesSummary } from '../options/GreetingRulesConfig';
 import { useActiveTabJob } from './useActiveTabJob';
-import { useAnalysis } from './useAnalysis';
+import { useAnalysis, type GreetingVersion } from './useAnalysis';
 import { GREETING_EXCERPT_LIMIT } from '../../analysis/greeting-examples';
-import type { GenerateGreetingOutput } from '../../analysis/analyze';
 
 const JOB_ERROR_TEXT: Record<string, string> = {
-  UNSUPPORTED_PAGE: '当前页面不支持读取职位，请打开 BOSS 直聘职位页',
-  CONTENT_SCRIPT_MISSING: '请刷新 BOSS 页面后重试（扩展安装或更新后需要刷新）',
-  NO_ACTIVE_JOB: '请先打开具体职位',
-  JOB_EXTRACTION_FAILED: '当前职位读取失败（页面结构可能已变化）',
+  UNSUPPORTED_PAGE: '请打开 BOSS 直聘职位页面',
+  CONTENT_SCRIPT_MISSING: '请刷新当前 BOSS 页面后再试',
+  NO_ACTIVE_JOB: '请点开一个具体职位查看分析',
+  JOB_EXTRACTION_FAILED: '职位信息读取失败，页面结构可能已变更',
 };
 
 function openOptions() {
@@ -42,7 +58,6 @@ export default function App() {
   const profile = data.profiles.find((p) => p.id === data.settings.activeProfileId) ?? null;
   const analysis = useAnalysis(job, profile, data.settings);
 
-  // 配置就绪检查
   let configIssue: AppErrorCode | 'NO_PROFILE' | null = null;
   if (!data.settings.llm) configIssue = 'LLM_NOT_CONFIGURED';
   else if (!data.hasPermission) configIssue = 'LLM_PERMISSION_MISSING';
@@ -52,214 +67,244 @@ export default function App() {
   const canAnalyze = data.loaded && !configIssue && !!job && analysis.view.kind !== 'running';
 
   return (
-    <div>
-      {/* Chrome 侧边栏标题栏已显示扩展名，这里不再重复标题 */}
-      <div className="row between section">
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <ProfilePicker profiles={data.profiles} activeId={profile?.id ?? null} />
-        </div>
-        <button onClick={openOptions}>设置</button>
-      </div>
-
-      {data.loaded && configIssue && (
-        <div className="section">
-          <div className="notice warn row between">
-            <span>{configIssue === 'NO_PROFILE' ? '请先在设置中导入简历并选择档案' : ERROR_MESSAGES[configIssue]}</span>
-            <button className="link" onClick={openOptions}>去设置</button>
-          </div>
-        </div>
-      )}
-
-      <JobSection state={jobState} onRefresh={refresh} />
-
-      <div className="section stack">
-        {analysis.view.kind === 'running' ? (
-          <button className="block" onClick={analysis.cancel}>
-            {analysis.view.phase === 'greeting' ? '撰写打招呼语中…（点击取消）' : '分析岗位匹配度中…（点击取消）'}
-          </button>
-        ) : (
-          <button
-            className="primary block"
-            disabled={!canAnalyze}
-            onClick={() => {
-              if (data.settings.llm && data.apiKey) void analysis.start(data.settings.llm, data.apiKey);
-            }}
+    <div className="sp-shell">
+      <header className="sp-header">
+        <div className="profile-select-wrap">
+          <IconUser size={14} className="muted" />
+          <select
+            aria-label="当前简历档案"
+            value={profile?.id ?? ''}
+            disabled={data.profiles.length === 0}
+            onChange={(e) => void updateSettings({ activeProfileId: e.target.value || null })}
           >
-            {analysis.view.kind === 'done' ? '重新分析职位（完整两阶段）' : '分析当前职位'}
-          </button>
-        )}
-        <p className="muted">仅在点击时调用模型；职位内容、档案摘要/事实及选中的历史样例会发送给你配置的模型服务商。</p>
-      </div>
-
-      {analysis.view.kind === 'error' && (
-        <div className="section">
-          <div className="notice err">{analysis.view.error.message}</div>
+            {data.profiles.length === 0 && <option value="">未创建档案</option>}
+            {!profile && data.profiles.length > 0 && <option value="">请选择档案</option>}
+            {data.profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
         </div>
-      )}
+        <button
+          type="button"
+          className="icon-btn"
+          title="打开设置"
+          aria-label="打开设置"
+          onClick={openOptions}
+        >
+          <IconSettings size={16} />
+        </button>
+      </header>
 
-      {job && analysis.view.kind === 'done' && (
-        <ResultSection
-          key={JSON.stringify([job.fingerprint, analysis.view.result.profileId, analysis.view.result.profileVersion])}
-          job={job}
-          result={analysis.view.result}
-          greeting={analysis.greeting ?? analysis.view.result.greeting}
-          isEdited={analysis.isEdited}
-          previousGreeting={analysis.previousGreeting}
-          pendingGreeting={analysis.pendingGreeting}
-          temporaryRule={analysis.temporaryRule}
-          useExamplesOverride={analysis.useExamplesOverride}
-          effectiveConfig={analysis.effectiveConfig}
-          analysisStale={analysis.analysisStale}
-          greetingStale={analysis.greetingStale}
-          canRegenerate={canAnalyze}
-          currentModel={data.settings.llm?.model}
-          onGreetingChange={analysis.setGreeting}
-          onTemporaryRuleChange={analysis.setTemporaryRule}
-          onUseExamplesChange={analysis.setUseExamplesOverride}
-          onRegenerateGreeting={() => {
-            if (data.settings.llm && data.apiKey) void analysis.regenerateGreeting(data.settings.llm, data.apiKey);
-          }}
-          onReanalyze={() => {
+      <main className="sp-body">
+        {data.loaded && configIssue && (
+          <div className="notice warn row">
+            <div className="row-sm grow">
+              <IconAlert size={15} />
+              <span className="small">
+                {configIssue === 'NO_PROFILE' ? '请先创建并选择一份简历档案' : ERROR_MESSAGES[configIssue]}
+              </span>
+            </div>
+            <button type="button" className="primary small" onClick={openOptions}>
+              去设置
+            </button>
+          </div>
+        )}
+
+        <JobCard
+          state={jobState}
+          onRefresh={refresh}
+          showAction={analysis.view.kind !== 'done'}
+          runningPhase={analysis.view.kind === 'running' ? analysis.view.phase : null}
+          canAnalyze={canAnalyze}
+          onAnalyze={() => {
             if (data.settings.llm && data.apiKey) void analysis.start(data.settings.llm, data.apiKey);
           }}
-          onAcceptPending={analysis.acceptPendingGreeting}
-          onDiscardPending={analysis.discardPendingGreeting}
-          onRestorePrevious={analysis.restorePreviousGreeting}
+          onCancel={analysis.cancel}
         />
+
+        {analysis.view.kind === 'error' && (
+          <div className="notice err">
+            <div className="row-sm">
+              <IconAlert size={15} />
+              <span>{analysis.view.error.message}</span>
+            </div>
+          </div>
+        )}
+
+        {job && analysis.view.kind === 'done' && (
+          <ResultWorkspace
+            key={JSON.stringify([job.fingerprint, analysis.view.result.profileId, analysis.view.result.profileVersion])}
+            job={job}
+            result={analysis.view.result}
+            greeting={analysis.greeting ?? analysis.view.result.greeting}
+            isEdited={analysis.isEdited}
+            previousGreeting={analysis.previousGreeting}
+            pendingGreeting={analysis.pendingGreeting}
+            temporaryRule={analysis.temporaryRule}
+            useExamplesOverride={analysis.useExamplesOverride}
+            effectiveConfig={analysis.effectiveConfig}
+            analysisStale={analysis.analysisStale}
+            greetingStale={analysis.greetingStale}
+            hasCachedGreeting={analysis.hasCachedGreeting}
+            canRegenerate={canAnalyze}
+            currentModel={data.settings.llm?.model}
+            onGreetingChange={analysis.setGreeting}
+            onTemporaryRuleChange={analysis.setTemporaryRule}
+            onUseExamplesChange={analysis.setUseExamplesOverride}
+            onRegenerateGreeting={() => {
+              if (data.settings.llm && data.apiKey) {
+                void analysis.regenerateGreeting(data.settings.llm, data.apiKey, { force: true });
+              }
+            }}
+            onApplyCachedGreeting={analysis.applyCachedGreeting}
+            onUpdateAnalysis={() => {
+              if (data.settings.llm && data.apiKey) {
+                void analysis.start(data.settings.llm, data.apiKey, { forceMatch: false, forceGreeting: false });
+              }
+            }}
+            onForceReanalyze={() => {
+              if (data.settings.llm && data.apiKey) {
+                void analysis.start(data.settings.llm, data.apiKey, { forceMatch: true, forceGreeting: true });
+              }
+            }}
+            onAcceptPending={analysis.acceptPendingGreeting}
+            onDiscardPending={analysis.discardPendingGreeting}
+            onRestorePrevious={analysis.restorePreviousGreeting}
+          />
+        )}
+      </main>
+
+      <footer className="sp-footer">
+        <DiagnosticsFooter
+          model={analysis.view.kind === 'done' ? analysis.view.result.model : data.settings.llm?.model}
+          canSnapshot={
+            jobState?.status !== 'error' ||
+            (jobState.code !== 'UNSUPPORTED_PAGE' && jobState.code !== 'CONTENT_SCRIPT_MISSING')
+          }
+          requestSnapshot={requestSnapshot}
+        />
+      </footer>
+    </div>
+  );
+}
+
+function JobCard({
+  state,
+  onRefresh,
+  showAction,
+  runningPhase,
+  canAnalyze,
+  onAnalyze,
+  onCancel,
+}: {
+  state: JobState | null;
+  onRefresh: () => void;
+  showAction: boolean;
+  runningPhase: 'analyzing' | 'greeting' | null;
+  canAnalyze: boolean;
+  onAnalyze: () => void;
+  onCancel: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <section className="panel-card stack">
+      <div className="row between">
+        <span className="muted">当前职位</span>
+        <div className="row-sm">
+          {state?.status === 'ready' && (
+            <button
+              type="button"
+              className="link small"
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded ? '收起 JD' : '查看 JD'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="ghost icon-btn small"
+            title="重新读取职位"
+            aria-label="重新读取职位"
+            onClick={onRefresh}
+          >
+            <IconRefresh size={14} />
+          </button>
+        </div>
+      </div>
+
+      {(!state || state.status === 'loading') && (
+        <div className="muted">正在识别页面中的职位信息…</div>
       )}
 
-      {jobState?.status !== 'error' ||
-      (jobState.code !== 'UNSUPPORTED_PAGE' && jobState.code !== 'CONTENT_SCRIPT_MISSING') ? (
-        <DiagnosticsSection requestSnapshot={requestSnapshot} />
-      ) : null}
-    </div>
-  );
-}
-
-/** 开发诊断：导出当前页面结构骨架，用于核验 BOSS 选择器（无需开发者工具）。 */
-function DiagnosticsSection({ requestSnapshot }: { requestSnapshot: () => Promise<string> }) {
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const run = async (mode: 'copy' | 'download') => {
-    try {
-      const text = await requestSnapshot();
-      if (mode === 'copy') {
-        await navigator.clipboard.writeText(text);
-        setMsg(`已复制（${text.length} 字符）`);
-      } else {
-        const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `joblens-dom-${Date.now()}.txt`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        setMsg('已下载');
-      }
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  return (
-    <details className="section">
-      <summary className="muted">开发诊断</summary>
-      <div className="stack" style={{ marginTop: 8 }}>
-        <div className="muted">
-          导出当前页面的结构骨架（标签、class 与可见文字片段），用于核验职位读取规则。只在点击时生成，不会自动上传。
-        </div>
-        <div className="row">
-          <button onClick={() => void run('download')}>下载页面结构</button>
-          <button onClick={() => void run('copy')}>复制页面结构</button>
-        </div>
-        {msg && <div className="muted">{msg}</div>}
-      </div>
-    </details>
-  );
-}
-
-function ProfilePicker({ profiles, activeId }: { profiles: UserProfile[]; activeId: string | null }) {
-  return (
-    <div className="row">
-      <span className="small">当前简历</span>
-      <select
-        className="grow"
-        value={activeId ?? ''}
-        disabled={profiles.length === 0}
-        onChange={(e) => void updateSettings({ activeProfileId: e.target.value || null })}
-      >
-        {profiles.length === 0 && <option value="">（尚无档案）</option>}
-        {!activeId && profiles.length > 0 && <option value="">请选择档案</option>}
-        {profiles.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function JobSection({ state, onRefresh }: { state: JobState | null; onRefresh: () => void }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className="section stack">
-      <div className="row between">
-        <h2>当前职位</h2>
-        <button className="link small" onClick={onRefresh}>重新读取</button>
-      </div>
-      {(!state || state.status === 'loading') && <div className="muted">正在识别当前职位…</div>}
       {state?.status === 'error' && (
         <div className={state.code === 'JOB_EXTRACTION_FAILED' ? 'notice err' : 'notice'}>
-          {JOB_ERROR_TEXT[state.code]}
+          <div>{JOB_ERROR_TEXT[state.code]}</div>
           {state.detail && <div className="muted">{state.detail}</div>}
         </div>
       )}
+
       {state?.status === 'ready' && (
-        <>
-          <div style={{ fontWeight: 600, fontSize: 15 }}>{state.job.title}</div>
-          <div className="small">
-            {[state.job.company, state.job.location, state.job.salary].filter(Boolean).join(' | ')}
+        <div className="stack-sm">
+          <div style={{ fontWeight: 600, fontSize: 15, lineHeight: 1.35 }}>{state.job.title}</div>
+          <div className="muted">
+            {[state.job.company, state.job.location, state.job.salary].filter(Boolean).join(' · ')}
           </div>
+          {expanded && <div className="pre jd-preview">{state.job.description}</div>}
+        </div>
+      )}
+
+      {showAction && (
+        runningPhase ? (
           <div className="row">
-            <span className="badge ok">JD 已识别</span>
-            <button className="link small" onClick={() => setExpanded((v) => !v)}>
-              {expanded ? '收起 JD 预览' : '展开 JD 预览'}
+            <button type="button" className="grow" disabled>
+              <IconRefresh size={14} className="spin" />
+              {runningPhase === 'greeting' ? '2/2 撰写打招呼语…' : '1/2 分析岗位匹配度…'}
+            </button>
+            <button type="button" className="ghost small" onClick={onCancel}>
+              取消
             </button>
           </div>
-          {expanded ? (
-            <div className="pre jd-preview">{state.job.description}</div>
-          ) : (
-            <div className="muted pre">
-              {state.job.description.slice(0, 120)}
-              {state.job.description.length > 120 ? '…' : ''}
-            </div>
-          )}
-        </>
+        ) : (
+          <button
+            type="button"
+            className="primary block"
+            disabled={!canAnalyze}
+            onClick={onAnalyze}
+          >
+            <IconSparkles size={15} />
+            分析当前职位
+          </button>
+        )
       )}
-    </div>
+    </section>
   );
 }
 
-function Points({ items, empty }: { items: MatchPoint[]; empty: string }) {
+function MatchPointList({ items, kind, empty }: { items: MatchPoint[]; kind: 'strengths' | 'gaps'; empty: string }) {
   if (items.length === 0) return <div className="muted">{empty}</div>;
   return (
-    <ul className="points">
+    <ul className={`dot-list ${kind === 'gaps' ? 'gaps' : ''}`}>
       {items.map((p, i) => (
         <li key={i}>
-          <div className="row wrap">
+          <div className="row wrap" style={{ gap: 5 }}>
             <span className="req">{p.requirement}</span>
-            {p.category && (
-              <span className={`badge ${p.category === 'hard' ? 'warn' : ''}`}>
-                {REQUIREMENT_CATEGORY_LABEL[p.category]}
-              </span>
+            {p.category === 'hard' && (
+              <span className="badge warn">{REQUIREMENT_CATEGORY_LABEL.hard}</span>
             )}
-            {p.status && (
-              <span className={`badge ${p.status === 'confirmed_lacking' ? 'err' : p.status === 'matched' ? 'ok' : ''}`}>
-                {EVIDENCE_STATUS_LABEL[p.status]}
-              </span>
+            {p.category === 'bonus' && (
+              <span className="badge">{REQUIREMENT_CATEGORY_LABEL.bonus}</span>
+            )}
+            {p.status === 'confirmed_lacking' && (
+              <span className="badge err">{EVIDENCE_STATUS_LABEL.confirmed_lacking}</span>
+            )}
+            {p.status === 'not_shown' && (
+              <span className="badge">{EVIDENCE_STATUS_LABEL.not_shown}</span>
             )}
           </div>
-          <div className="small">{p.evidence}</div>
+          <div className="ev">{p.evidence}</div>
         </li>
       ))}
     </ul>
@@ -278,18 +323,22 @@ function IssueNotices({
   const otherIssues = details ? details.filter((d) => d.kind !== 'fact').map((d) => d.message) : issues;
 
   return (
-    <div className="stack">
+    <div className="stack-sm">
       {factIssues.length > 0 && (
-        <div className="notice warn">事实待核对：{factIssues.join('；')}</div>
+        <div className="notice warn">
+          <span><strong>事实待核对：</strong>{factIssues.join('；')}</span>
+        </div>
       )}
       {otherIssues.length > 0 && (
-        <div className="notice warn">风格/结构提示：{otherIssues.join('；')}</div>
+        <div className="notice warn">
+          <span><strong>风格提示：</strong>{otherIssues.join('；')}</span>
+        </div>
       )}
     </div>
   );
 }
 
-function ResultSection({
+function ResultWorkspace({
   job,
   result,
   greeting,
@@ -301,13 +350,16 @@ function ResultSection({
   effectiveConfig,
   analysisStale,
   greetingStale,
+  hasCachedGreeting,
   canRegenerate,
   currentModel,
   onGreetingChange,
   onTemporaryRuleChange,
   onUseExamplesChange,
   onRegenerateGreeting,
-  onReanalyze,
+  onApplyCachedGreeting,
+  onUpdateAnalysis,
+  onForceReanalyze,
   onAcceptPending,
   onDiscardPending,
   onRestorePrevious,
@@ -317,32 +369,40 @@ function ResultSection({
   greeting: string;
   isEdited: boolean;
   previousGreeting: string | null;
-  pendingGreeting: GenerateGreetingOutput | null;
+  pendingGreeting: GreetingVersion | null;
   temporaryRule: string;
   useExamplesOverride: boolean | undefined;
   effectiveConfig: EffectiveGreetingConfig | null;
   analysisStale: boolean;
   greetingStale: boolean;
+  hasCachedGreeting: boolean;
   canRegenerate: boolean;
   currentModel?: string;
   onGreetingChange: (t: string) => void;
   onTemporaryRuleChange: (r: string) => void;
   onUseExamplesChange: (enabled: boolean | undefined) => void;
   onRegenerateGreeting: () => void;
-  onReanalyze: () => void;
+  onApplyCachedGreeting: () => void;
+  onUpdateAnalysis: () => void;
+  onForceReanalyze: () => void;
   onAcceptPending: () => void;
   onDiscardPending: () => void;
   onRestorePrevious: () => void;
 }) {
+  const [matchTab, setMatchTab] = useState<'all' | 'strengths' | 'gaps'>('all');
+  const [showBasis, setShowBasis] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showExampleOpts, setShowExampleOpts] = useState(false);
   const [copied, setCopied] = useState(false);
   const [savingExample, setSavingExample] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [examplePreferred, setExamplePreferred] = useState(false);
   const [exampleRoleTags, setExampleRoleTags] = useState(job.title);
+
   const badge =
     result.recommendation === 'recommended' ? 'ok' : result.recommendation === 'consider' ? 'warn' : 'err';
-
   const effectiveUseExamples = useExamplesOverride ?? effectiveConfig?.preferences.useExamples ?? true;
+  const charCount = greeting.replace(/\s/g, '').length;
 
   const copy = async () => {
     await navigator.clipboard.writeText(greeting);
@@ -368,9 +428,10 @@ function ResultSection({
         roleTags: parseListInput(exampleRoleTags),
         createdAt: new Date().toISOString(),
       });
-      setSaveMessage({ text: '已保存为当前档案的样例', error: false });
+      setSaveMessage({ text: '已保存为当前档案样例', error: false });
+      setShowExampleOpts(false);
     } catch (err) {
-      setSaveMessage({ text: `样例保存失败：${err instanceof Error ? err.message : String(err)}`, error: true });
+      setSaveMessage({ text: `保存失败：${err instanceof Error ? err.message : String(err)}`, error: true });
     } finally {
       setSavingExample(false);
     }
@@ -378,110 +439,196 @@ function ResultSection({
 
   return (
     <>
-      <div className="section stack">
+      {/* 匹配分析卡 */}
+      <section className="panel-card stack">
         {analysisStale && (
-          <div className="notice warn stack">
-            <div>
-              模型配置（原：{result.model}{currentModel ? ` → 现：${currentModel}` : ''}）、档案事实或选材配置已变更，下方展示的是旧配置下的结果。
+          <div className="notice warn row wrap">
+            <span className="small grow">
+              职位内容、档案事实、选材规则或模型（{result.model}{currentModel && currentModel !== result.model ? ` → ${currentModel}` : ''}）已更新，当前分析已过期
+            </span>
+            <button type="button" className="primary small" disabled={!canRegenerate} onClick={onUpdateAnalysis}>
+              更新分析
+            </button>
+          </div>
+        )}
+
+        <div className="row between">
+          <div className="score-badge-row">
+            <span className="score-num">{result.matchScore}</span>
+            <span className="muted">/100</span>
+            <span className={`badge ${badge}`}>{RECOMMENDATION_LABEL[result.recommendation]}</span>
+          </div>
+          <button
+            type="button"
+            className="ghost small"
+            title="忽略本地缓存，强制重新执行完整两阶段分析"
+            disabled={!canRegenerate}
+            onClick={onForceReanalyze}
+          >
+            <IconRefresh size={13} />
+            强制重分析
+          </button>
+        </div>
+
+        <div className="pre">{result.summary}</div>
+
+        <div className="segmented full">
+          <button
+            type="button"
+            className={`seg-tab ${matchTab === 'all' ? 'active' : ''}`}
+            onClick={() => setMatchTab('all')}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            className={`seg-tab ${matchTab === 'strengths' ? 'active' : ''}`}
+            onClick={() => setMatchTab('strengths')}
+          >
+            优势 ({result.strengths.length})
+          </button>
+          <button
+            type="button"
+            className={`seg-tab ${matchTab === 'gaps' ? 'active' : ''}`}
+            onClick={() => setMatchTab('gaps')}
+          >
+            差距 ({result.gaps.length})
+          </button>
+        </div>
+
+        {(matchTab === 'all' || matchTab === 'strengths') && (
+          <div className="stack-sm">
+            {matchTab === 'all' && <div className="muted">匹配优势</div>}
+            <MatchPointList items={result.strengths} kind="strengths" empty="未列出明确优势" />
+          </div>
+        )}
+
+        {(matchTab === 'all' || matchTab === 'gaps') && (
+          <div className="stack-sm">
+            {matchTab === 'all' && <div className="muted">主要差距</div>}
+            <MatchPointList items={result.gaps} kind="gaps" empty="未列出明显差距" />
+          </div>
+        )}
+      </section>
+
+      {/* 打招呼语工作台 */}
+      <section className="panel-card stack">
+        <div className="row between wrap">
+          <div className="row-sm">
+            <h3>打招呼语</h3>
+            <span className="badge tabular">{charCount} 字</span>
+            {isEdited && <span className="badge info">已编辑</span>}
+          </div>
+          <div className="row-sm">
+            <button
+              type="button"
+              className={`ghost small ${showBasis ? 'primary' : ''}`}
+              onClick={() => setShowBasis((v) => !v)}
+            >
+              <IconInfo size={13} />
+              依据
+            </button>
+            {previousGreeting && (
+              <button
+                type="button"
+                className="ghost small"
+                onClick={() => setShowHistory((v) => !v)}
+              >
+                <IconHistory size={13} />
+                上一版
+              </button>
+            )}
+          </div>
+        </div>
+
+        {showBasis && (
+          <div className="panel-card subtle stack-sm">
+            {result.greetingPoints.length > 0 && (
+              <div className="stack-sm">
+                <span className="small" style={{ fontWeight: 600 }}>本次选中匹配事实（{result.greetingPoints.length} 条）</span>
+                <ul className="dot-list">
+                  {result.greetingPoints.map((p) => (
+                    <li key={p}><span className="small">{p}</span></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="stack-sm">
+              <span className="small" style={{ fontWeight: 600 }}>生效写作规则与参数</span>
+              {(effectiveConfig?.preferences ?? result.effectivePreferences) && (
+                <div className="muted">
+                  {formatPreferencesSummary((effectiveConfig?.preferences ?? result.effectivePreferences)!)}
+                </div>
+              )}
+              <div className="pre muted">
+                {(effectiveConfig?.combinedRulesText ?? result.effectiveRules) || '未配置自定义规则，按默认自然风格生成'}
+              </div>
             </div>
-            <div>
-              <button className="small primary" disabled={!canRegenerate} onClick={onReanalyze}>
-                按当前配置重新分析
+          </div>
+        )}
+
+        {showHistory && previousGreeting && (
+          <div className="panel-card subtle stack-sm">
+            <div className="row between">
+              <span className="small" style={{ fontWeight: 600 }}>上一版内容</span>
+              <div className="row-sm">
+                <button
+                  type="button"
+                  className="small"
+                  onClick={() => {
+                    onRestorePrevious();
+                    setShowHistory(false);
+                  }}
+                >
+                  恢复此版
+                </button>
+                <button type="button" className="ghost icon-btn small" onClick={() => setShowHistory(false)}>
+                  <IconX size={13} />
+                </button>
+              </div>
+            </div>
+            <div className="pre">{previousGreeting}</div>
+          </div>
+        )}
+
+        {analysisStale && (
+          <div className="notice warn row wrap">
+            <span className="small grow">匹配分析已过期，请先点击上方“更新分析”同步最新事实后再重写打招呼语</span>
+          </div>
+        )}
+
+        {greetingStale && !analysisStale && (
+          <div className="notice warn row wrap">
+            <span className="small grow">
+              {hasCachedGreeting ? '已命中该规则与样例配置的本地缓存' : '写作规则、临时要求或参考样例已变更'}
+            </span>
+            <div className="row-sm">
+              {hasCachedGreeting && (
+                <button type="button" className="primary small" onClick={onApplyCachedGreeting}>
+                  使用缓存
+                </button>
+              )}
+              <button type="button" className="small" disabled={!canRegenerate} onClick={onRegenerateGreeting}>
+                {hasCachedGreeting ? '重新生成' : '按新规则重写'}
               </button>
             </div>
           </div>
         )}
-        <div className="row">
-          <span className="score">{result.matchScore}</span>
-          <span className="muted">/100 辅助评分</span>
-          <span className={`badge ${badge}`}>{RECOMMENDATION_LABEL[result.recommendation]}</span>
-        </div>
-        <div className="pre">{result.summary}</div>
-        <h3>主要优势</h3>
-        <Points items={result.strengths} empty="未列出明确优势" />
-        <h3>主要差距</h3>
-        <Points items={result.gaps} empty="未列出明显差距" />
-        <div className="muted">
-          评分由模型主观给出，仅供辅助判断，不代表录用概率。模型：{result.model} ·{' '}
-          {new Date(result.createdAt).toLocaleTimeString()}
-        </div>
-      </div>
-
-      <div className="section stack">
-        <div className="row between wrap">
-          <h3>打招呼语</h3>
-          {isEdited && <span className="badge info">已手动编辑（重生成不会覆盖）</span>}
-        </div>
-
-        {greetingStale && (
-          <div className="notice warn">
-            写作规则、单次要求或参考样例已变更；点击下方“仅重新生成打招呼语”可按新规则重写，无需重复分析 JD。
-          </div>
-        )}
-
-        {result.greetingPoints.length > 0 && (
-          <details>
-            <summary className="muted">本次使用的候选匹配事实（{result.greetingPoints.length} 条）</summary>
-            <ul className="points">{result.greetingPoints.map((p) => <li key={p}>{p}</li>)}</ul>
-          </details>
-        )}
-
-        <details>
-          <summary className="muted">本次生效的写作规则与偏好</summary>
-          <div className="stack" style={{ marginTop: 6 }}>
-            {(effectiveConfig?.preferences ?? result.effectivePreferences) && (
-              <div className="small">
-                <strong>生效参数：</strong>
-                {formatPreferencesSummary((effectiveConfig?.preferences ?? result.effectivePreferences)!)}
-              </div>
-            )}
-            <div className="pre jd-preview">
-              {(effectiveConfig?.combinedRulesText ?? result.effectiveRules) || '（未配置自定义规则，按默认自然风格与事实边界生成）'}
-            </div>
-          </div>
-        </details>
 
         <IssueNotices issues={result.greetingIssues} details={result.greetingIssueDetails} />
 
-        <label className="field">
-          <span>单次生成补充要求（仅作用于当前岗位，不修改全局或档案规则）</span>
-          <input
-            type="text"
-            value={temporaryRule}
-            placeholder="例：重点突出 Agent 编排经验，分 3 点列出，不超过 220 字"
-            onChange={(e) => onTemporaryRuleChange(e.target.value)}
-          />
-        </label>
-
-        <div className="row between wrap">
-          <label className="row small">
-            <input
-              type="checkbox"
-              checked={effectiveUseExamples}
-              onChange={(e) => onUseExamplesChange(e.target.checked)}
-            />
-            参考相似历史样例（仅学风格，不引入新事实）
-          </label>
-          <button
-            type="button"
-            className="small"
-            disabled={!canRegenerate}
-            onClick={onRegenerateGreeting}
-          >
-            仅重新生成打招呼语
-          </button>
-        </div>
-
         {pendingGreeting && (
-          <div className="compare-box stack">
+          <div className="compare-box stack-sm">
             <div className="row between wrap">
-              <strong>新生成版本已就绪（未覆盖你当前编辑的内容）</strong>
-              <div className="row">
+              <span className="small" style={{ fontWeight: 600, color: 'var(--primary-hover)' }}>
+                新版本已生成（未覆盖你的手动编辑）
+              </span>
+              <div className="row-sm">
                 <button type="button" className="primary small" onClick={onAcceptPending}>
-                  采用新版本
+                  采用新版
                 </button>
                 <button type="button" className="small" onClick={onDiscardPending}>
-                  保留我的编辑
+                  保留编辑
                 </button>
               </div>
             </div>
@@ -489,72 +636,176 @@ function ResultSection({
               issues={pendingGreeting.greetingIssues}
               details={pendingGreeting.greetingIssueDetails}
             />
-            <div className="pre">{pendingGreeting.greeting}</div>
+            <div className="pre">{pendingGreeting.text}</div>
           </div>
         )}
 
-        <textarea
-          aria-label="打招呼语"
-          className="autosize"
-          rows={8}
-          value={greeting}
-          disabled={savingExample}
-          onChange={(e) => {
-            onGreetingChange(e.target.value);
-            setSaveMessage(null);
-          }}
-        />
-
-        {previousGreeting && (
-          <details>
-            <summary className="muted">查看上一版结果并对比</summary>
-            <div className="stack" style={{ marginTop: 6 }}>
-              <div className="pre jd-preview">{previousGreeting}</div>
-              <div>
-                <button type="button" className="small" onClick={onRestorePrevious}>
-                  恢复上一版到编辑框
-                </button>
-              </div>
+        <div className="composer-box">
+          <textarea
+            aria-label="打招呼语"
+            className="autosize"
+            rows={6}
+            value={greeting}
+            disabled={savingExample}
+            onChange={(e) => {
+              onGreetingChange(e.target.value);
+              setSaveMessage(null);
+            }}
+          />
+          <div className="composer-toolbar">
+            <button type="button" className="primary small" onClick={() => void copy()}>
+              {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+              {copied ? '已复制' : '复制打招呼语'}
+            </button>
+            <div className="row-sm">
+              <button
+                type="button"
+                className="small"
+                disabled={savingExample || !greeting.trim()}
+                onClick={() => void saveExample()}
+              >
+                <IconBookmark size={13} />
+                {savingExample ? '保存中…' : '存为样例'}
+              </button>
+              <button
+                type="button"
+                className={`icon-btn small ${showExampleOpts ? 'primary' : ''}`}
+                title="样例保存选项（优先参考与岗位标签）"
+                aria-label="样例保存选项"
+                onClick={() => setShowExampleOpts((v) => !v)}
+              >
+                <IconSliders size={13} />
+              </button>
             </div>
-          </details>
-        )}
-
-        <div className="row wrap">
-          <button className="primary" onClick={() => void copy()}>
-            {copied ? '已复制' : '复制打招呼语'}
-          </button>
-          <button disabled={savingExample || !greeting.trim()} onClick={() => void saveExample()}>
-            {savingExample ? '保存中…' : '保存为样例'}
-          </button>
+          </div>
         </div>
 
-        <details>
-          <summary className="muted">保存样例设置（优先参考 / 适用岗位标签）</summary>
-          <div className="stack" style={{ marginTop: 6 }}>
-            <label className="row small">
-              <input
-                type="checkbox"
-                checked={examplePreferred}
-                onChange={(e) => setExamplePreferred(e.target.checked)}
-              />
-              设为当前档案的优先参考样例
-            </label>
+        {showExampleOpts && (
+          <div className="panel-card subtle stack-sm">
+            <ToggleSwitch
+              checked={examplePreferred}
+              onChange={setExamplePreferred}
+              label="设为当前档案的优先参考样例"
+            />
             <label className="field">
-              <span>适用岗位类型标签（顿号或逗号分隔）</span>
+              <span>适用岗位标签（逗号或顿号分隔）</span>
               <input
                 type="text"
                 value={exampleRoleTags}
                 onChange={(e) => setExampleRoleTags(e.target.value)}
-                placeholder="例：AI Agent、智能体开发"
+                placeholder="例：AI Agent、企业交付"
               />
             </label>
           </div>
-        </details>
+        )}
 
-        {saveMessage && <div role="status" className={saveMessage.error ? 'notice err' : 'muted'}>{saveMessage.text}</div>}
-        <div className="muted">本地检查不能代替全面事实核验，确认内容真实后再复制使用或保存为样例。</div>
-        <div className="muted">插件不会自动发送消息，请自行粘贴到聊天框。</div>
+        {saveMessage && (
+          <div role="status" className={saveMessage.error ? 'notice err' : 'notice ok'}>
+            {saveMessage.text}
+          </div>
+        )}
+
+        {/* 单次补充要求与独立重写 */}
+        <div className="stack-sm">
+          <div className="refine-bar">
+            <input
+              type="text"
+              aria-label="单次生成补充要求"
+              value={temporaryRule}
+              disabled={analysisStale}
+              placeholder={analysisStale ? '请先更新匹配分析…' : '微调要求，如：分3点写 / 精简到80字…'}
+              onChange={(e) => onTemporaryRuleChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing && canRegenerate && !analysisStale) {
+                  e.preventDefault();
+                  onRegenerateGreeting();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="small"
+              disabled={!canRegenerate || analysisStale}
+              onClick={onRegenerateGreeting}
+              title={analysisStale ? '匹配分析已过期，请先更新分析' : '强制重新生成打招呼语，不重跑匹配分析'}
+            >
+              <IconWand size={13} />
+              重写
+            </button>
+          </div>
+          <div className="row between wrap">
+            <ToggleSwitch
+              checked={effectiveUseExamples}
+              onChange={(v) => onUseExamplesChange(v)}
+              label="参考历史样例风格"
+            />
+            <span className="muted">不重跑匹配分析</span>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function DiagnosticsFooter({
+  model,
+  canSnapshot,
+  requestSnapshot,
+}: {
+  model?: string;
+  canSnapshot: boolean;
+  requestSnapshot: () => Promise<string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const run = async (mode: 'copy' | 'download') => {
+    try {
+      const text = await requestSnapshot();
+      if (mode === 'copy') {
+        await navigator.clipboard.writeText(text);
+        setMsg(`已复制（${text.length} 字符）`);
+      } else {
+        const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `joblens-dom-${Date.now()}.txt`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setMsg('已下载');
+      }
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <>
+      <div className="row between">
+        <span className="muted truncate">
+          不自动发送 · 需人工核对{model ? ` · ${model}` : ''}
+        </span>
+        {canSnapshot && (
+          <button type="button" className="link small" onClick={() => setOpen((v) => !v)}>
+            {open ? '收起诊断' : '诊断'}
+          </button>
+        )}
       </div>
+      {open && canSnapshot && (
+        <div className="panel-card stack-sm">
+          <div className="muted">导出页面 DOM 骨架以排查职位识别规则（仅本地生成）。</div>
+          <div className="row">
+            <button type="button" className="small" onClick={() => void run('download')}>
+              下载页面结构
+            </button>
+            <button type="button" className="small" onClick={() => void run('copy')}>
+              复制页面结构
+            </button>
+            <IconChevronDown size={12} className="muted" />
+          </div>
+          {msg && <div className="muted">{msg}</div>}
+        </div>
+      )}
     </>
   );
 }

@@ -1,10 +1,13 @@
 import type {
   AppSettings,
+  ConflictPreferenceField,
   EffectiveGreetingConfig,
   GreetingExample,
   GreetingPreferences,
   GreetingPresetId,
   ProfileFact,
+  RuleConflictResolution,
+  RulePreferenceConflict,
   UserProfile,
 } from '../shared/types';
 import { AppError } from '../shared/errors';
@@ -111,6 +114,7 @@ export const VERSIONED_FIELDS = [
   'targetRoles',
   'preferredLocations',
   'salaryPreference',
+  'selectionRules',
   'greetingRules',
   'greetingPreferences',
 ] as const satisfies readonly (keyof UserProfile)[];
@@ -153,6 +157,9 @@ export function normalizeGreetingPreferences(
   if (!prefs) return undefined;
   const out: Partial<GreetingPreferences> = {};
   if (prefs.preset && prefs.preset in GREETING_PRESETS) out.preset = prefs.preset;
+  if (prefs.conflictResolution === 'text' || prefs.conflictResolution === 'structured') {
+    out.conflictResolution = prefs.conflictResolution;
+  }
   if (typeof prefs.maxPoints === 'number' && Number.isFinite(prefs.maxPoints)) {
     out.maxPoints = Math.min(8, Math.max(1, Math.round(prefs.maxPoints)));
   }
@@ -178,6 +185,10 @@ function normalize<T extends ProfilePatch>(p: T): T {
   if (out.summary !== undefined) out.summary = out.summary.trim();
   if (out.facts !== undefined) out.facts = normalizeProfileFacts(out.facts);
   if (out.extraNotes !== undefined) out.extraNotes = out.extraNotes.trim();
+  if (out.selectionRules !== undefined) {
+    const s = out.selectionRules.trim();
+    out.selectionRules = s || undefined;
+  }
   if (out.greetingRules !== undefined) out.greetingRules = out.greetingRules.trim();
   if (out.greetingPreferences !== undefined) {
     out.greetingPreferences = normalizeGreetingPreferences(out.greetingPreferences);
@@ -234,6 +245,7 @@ export function updateProfile(old: UserProfile, patch: ProfilePatch, now = new D
   const n = normalize(patch);
   const next: UserProfile = { ...old, ...n };
   if ('salaryPreference' in n && n.salaryPreference === undefined) delete next.salaryPreference;
+  if ('selectionRules' in n && n.selectionRules === undefined) delete next.selectionRules;
   if ('greetingPreferences' in n && n.greetingPreferences === undefined) delete next.greetingPreferences;
   if ('facts' in n && n.facts === undefined) delete next.facts;
   assertValid(next);
@@ -274,7 +286,7 @@ export function parseListInput(text: string): string[] {
   return cleanList(text.split(/[,，、;；\n]/));
 }
 
-// ---------- 三级规则解析与迁移 ----------
+// ---------- 三级规则解析、冲突检测与迁移 ----------
 
 function mergePreferences(
   base: GreetingPreferences,
@@ -288,13 +300,13 @@ function mergePreferences(
 }
 
 /**
- * 从用户自由填写的规则文本中识别显式格式/长度/选材指令。
- * 按行顺序执行，确保同一层内后配置覆盖先配置，高优先级层级覆盖低优先级层级。
+ * 仅提取自由文本规则中“显式出现”的参数指令（未提及的字段不产生覆盖）。
+ * 同文本内按行顺序解析，保证后写配置覆盖先写配置。
  */
-export function applyRuleTextDirectives(base: GreetingPreferences, ruleText: string): GreetingPreferences {
+export function extractRuleTextDirectives(ruleText: string): Partial<GreetingPreferences> {
   const trimmed = ruleText.trim();
-  if (!trimmed) return base;
-  const next: GreetingPreferences = { ...base };
+  if (!trimmed) return {};
+  const extracted: Partial<GreetingPreferences> = {};
 
   for (const rawLine of trimmed.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -303,23 +315,23 @@ export function applyRuleTextDirectives(base: GreetingPreferences, ruleText: str
     // 1. 列表 / 分点
     const explicitlySingle = /(?:不分段|一段话|单段|不要换行|禁止换行|不换行)/.test(line);
     if (/(?:禁止分点|不要分点|不用分点|禁止列表|不要列表|不使用列表|不分点)/.test(line)) {
-      next.allowLists = false;
+      extracted.allowLists = false;
     } else if (/(?:分点|列表|逐条|条列|编号|使用清单|用项目符号)/.test(line)) {
-      next.allowLists = true;
-      if (!explicitlySingle) next.singleParagraph = false;
+      extracted.allowLists = true;
+      if (!explicitlySingle) extracted.singleParagraph = false;
     }
 
     // 2. 段落 / 换行
     if (explicitlySingle) {
-      next.singleParagraph = true;
+      extracted.singleParagraph = true;
     } else if (/(?:分段|多段|允许换行|可换行|换行)/.test(line)) {
-      next.singleParagraph = false;
+      extracted.singleParagraph = false;
     }
 
     // 3. 长度限制
     if (/(?:不限字数|无字数限制|不限制字数|字数不限)/.test(line)) {
-      next.maxChars = null;
-      delete next.targetLengthHint;
+      extracted.maxChars = null;
+      delete extracted.targetLengthHint;
     } else {
       const rangeMatch = /(\d{2,4})\s*[-~～到至]\s*(\d{2,4})\s*字/.exec(line);
       const capMatch = /(?:不超过|控制在|最多|限|小于|约|大约)?\s*(\d{2,4})\s*字(?:以内|以下|左右)?/.exec(line);
@@ -327,32 +339,32 @@ export function applyRuleTextDirectives(base: GreetingPreferences, ruleText: str
         const min = Number(rangeMatch[1]);
         const max = Number(rangeMatch[2]);
         if (max >= 20 && max >= min) {
-          next.targetLengthHint = `${min}–${max}`;
-          next.maxChars = Math.min(2000, max + Math.max(20, Math.round(max * 0.15)));
+          extracted.targetLengthHint = `${min}–${max}`;
+          extracted.maxChars = Math.min(2000, max + Math.max(20, Math.round(max * 0.15)));
         }
       } else if (capMatch) {
         const cap = Number(capMatch[1]);
         if (cap >= 20) {
           const isApprox = /左右|约/.test(capMatch[0]);
-          next.maxChars = isApprox ? Math.min(2000, Math.round(cap * 1.2)) : cap;
-          next.targetLengthHint = isApprox ? `约 ${cap}` : `≤ ${cap}`;
+          extracted.maxChars = isApprox ? Math.min(2000, Math.round(cap * 1.2)) : cap;
+          extracted.targetLengthHint = isApprox ? `约 ${cap}` : `≤ ${cap}`;
         }
       } else if (/(?:非常简短|极简|一两句话|两句话以内|简短一两句)/.test(line)) {
-        next.maxChars = 90;
-        next.targetLengthHint = '30–80';
+        extracted.maxChars = 90;
+        extracted.targetLengthHint = '30–80';
       } else if (/(?:详细|长文|充裕|全面介绍|详细自荐|展开介绍)/.test(line)) {
-        if (next.maxChars !== null && next.maxChars < 350) {
-          next.maxChars = 350;
-          next.targetLengthHint = '150–320';
+        if (extracted.maxChars === undefined || (extracted.maxChars !== null && extracted.maxChars < 350)) {
+          extracted.maxChars = 350;
+          extracted.targetLengthHint = '150–320';
         }
       }
     }
 
     // 4. 能力缺口 / 短板策略
     if (/(?:不主动提及|不要提及|不提|不写|回避|不暴露).*?(?:短板|不足|差距|缺口)|只写优势/.test(line)) {
-      next.allowGapExplanation = false;
+      extracted.allowGapExplanation = false;
     } else if (/(?:提及|说明|解释|包含|允许写).*?(?:短板|不足|差距|缺口)|坦诚说明/.test(line)) {
-      next.allowGapExplanation = true;
+      extracted.allowGapExplanation = true;
     }
 
     // 5. 选材数量
@@ -360,18 +372,136 @@ export function applyRuleTextDirectives(base: GreetingPreferences, ruleText: str
       /(?:选择|挑选|挑|选出|保留|覆盖)\s*(\d+)(?:\s*[-~～到至]\s*(\d+))?\s*(?:个|条)?(?:匹配点|事实|素材|亮点|优势)/.exec(line);
     if (pointsMatch) {
       const n = Number(pointsMatch[2] ?? pointsMatch[1]);
-      if (Number.isFinite(n) && n >= 1) next.maxPoints = Math.min(8, Math.max(1, n));
+      if (Number.isFinite(n) && n >= 1) extracted.maxPoints = Math.min(8, Math.max(1, n));
     }
 
     // 6. 样例参考开关
     if (/(?:不使用样例|关闭样例|不参考样例|忽略样例)/.test(line)) {
-      next.useExamples = false;
+      extracted.useExamples = false;
     } else if (/(?:使用样例|参考样例|开启样例)/.test(line)) {
-      next.useExamples = true;
+      extracted.useExamples = true;
     }
   }
 
-  return next;
+  return extracted;
+}
+
+/**
+ * 从用户自由填写的规则文本中识别显式格式/长度/选材指令并应用到基础偏好上。
+ */
+export function applyRuleTextDirectives(base: GreetingPreferences, ruleText: string): GreetingPreferences {
+  const directives = extractRuleTextDirectives(ruleText);
+  if (Object.keys(directives).length === 0) return base;
+  return mergePreferences(base, directives);
+}
+
+const PURE_WRITING_LINE_RE =
+  /(?:字数|不超过|控制在|最多\s*\d+\s*字|以内|不限字数|分段|多段|一段话|单段|换行|分点|列表|逐条|编号|固定结尾|结尾\s*[:：]|不(?:主动)?谈薪|到岗时间|口吻|语气|客套话|样例)/;
+const SELECTION_SIGNAL_RE =
+  /(?:优先|突出|强调|侧重|重点|岗位|项目|经历|事实|技术|选材|素材|匹配点|短板|差距|缺口|不足|了解|参与|主导|业务|架构|工程|研发|测试|评测|安全|Agent|RAG|FDE)/i;
+
+/**
+ * 将混合规则文本拆分为：
+ * - selectionLines：影响阶段 A 匹配选材与岗位重点的行（修改它们须使阶段 A 缓存失效）；
+ * - writingLines：所有写作/格式规则行（仅修改纯表达格式行时，阶段 A 缓存保持命中）。
+ */
+export function splitSelectionAndWritingRules(ruleText: string): {
+  selectionLines: string[];
+  writingLines: string[];
+} {
+  const selectionLines: string[] = [];
+  const writingLines: string[] = [];
+  for (const raw of ruleText.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    writingLines.push(line);
+    const isPureWriting = PURE_WRITING_LINE_RE.test(line) && !SELECTION_SIGNAL_RE.test(line);
+    if (!isPureWriting) selectionLines.push(line);
+  }
+  return { selectionLines, writingLines };
+}
+
+const CONFLICT_FIELD_LABELS: Record<ConflictPreferenceField, string> = {
+  singleParagraph: '段落格式',
+  allowLists: '分点/列表',
+  maxChars: '字数上限',
+  allowGapExplanation: '能力差距说明',
+  maxPoints: '选材条数上限',
+  useExamples: '样例参考',
+};
+
+function formatConflictFieldValue(field: ConflictPreferenceField, value: unknown): string {
+  switch (field) {
+    case 'singleParagraph':
+      return value ? '单段（禁止换行）' : '允许分段';
+    case 'allowLists':
+      return value ? '允许分点/列表' : '禁止分点/列表';
+    case 'maxChars':
+      return value === null ? '不限字数' : `${String(value)} 字`;
+    case 'allowGapExplanation':
+      return value ? '允许解释差距' : '不主动提及短板';
+    case 'maxPoints':
+      return `最多 ${String(value)} 条`;
+    case 'useExamples':
+      return value ? '参考样例' : '关闭样例';
+  }
+}
+
+function collectLayerConflicts(
+  layer: 'global' | 'profile' | 'temporary',
+  textDirectives: Partial<GreetingPreferences>,
+  structuredPrefs: Partial<GreetingPreferences> | undefined,
+  resolution: RuleConflictResolution,
+): RulePreferenceConflict[] {
+  if (!structuredPrefs) return [];
+  const conflicts: RulePreferenceConflict[] = [];
+  const fields: readonly ConflictPreferenceField[] = [
+    'singleParagraph',
+    'allowLists',
+    'maxChars',
+    'allowGapExplanation',
+    'maxPoints',
+    'useExamples',
+  ];
+  for (const field of fields) {
+    const tVal = textDirectives[field];
+    const sVal = structuredPrefs[field];
+    if (tVal === undefined || sVal === undefined || tVal === sVal) continue;
+    const resolved = resolution === 'structured' ? sVal : tVal;
+    conflicts.push({
+      layer,
+      field,
+      label: CONFLICT_FIELD_LABELS[field],
+      textValue: formatConflictFieldValue(field, tVal),
+      structuredValue: formatConflictFieldValue(field, sVal),
+      resolvedValue: formatConflictFieldValue(field, resolved),
+    });
+  }
+  return conflicts;
+}
+
+/** 仅返回与基线不同的显式修改项，避免无意持久化默认校验值覆盖文本指令。 */
+export function diffGreetingPreferences(
+  current: GreetingPreferences,
+  baseline: GreetingPreferences = DEFAULT_GREETING_PREFERENCES,
+): Partial<GreetingPreferences> {
+  const out: Partial<GreetingPreferences> = {};
+  if (current.preset && current.preset !== baseline.preset) out.preset = current.preset;
+  if (current.conflictResolution && current.conflictResolution !== baseline.conflictResolution) {
+    out.conflictResolution = current.conflictResolution;
+  }
+  if (current.maxPoints !== baseline.maxPoints) out.maxPoints = current.maxPoints;
+  if (current.allowGapExplanation !== baseline.allowGapExplanation) {
+    out.allowGapExplanation = current.allowGapExplanation;
+  }
+  if (current.singleParagraph !== baseline.singleParagraph) out.singleParagraph = current.singleParagraph;
+  if (current.allowLists !== baseline.allowLists) out.allowLists = current.allowLists;
+  if (current.maxChars !== baseline.maxChars) out.maxChars = current.maxChars;
+  if (current.targetLengthHint !== baseline.targetLengthHint && current.targetLengthHint) {
+    out.targetLengthHint = current.targetLengthHint;
+  }
+  if (current.useExamples !== baseline.useExamples) out.useExamples = current.useExamples;
+  return out;
 }
 
 export interface ResolveGreetingConfigInput {
@@ -383,37 +513,81 @@ export interface ResolveGreetingConfigInput {
 
 /**
  * 解析三级打招呼语配置：
- * 优先级：内置事实与安全约束 > 单次要求 > 档案专属规则 > 全局默认规则
+ * - 优先级：内置事实与安全约束 > 单次要求 > 档案专属规则 > 全局默认规则
+ * - 同层自由文本规则与结构化参数冲突时，默认以文字规则为准（可通过 conflictResolution: 'structured' 显式切换），并输出冲突明细供界面提示。
+ * - 同时输出拆分后的 effectiveSelectionRules（阶段 A）与 effectiveWritingRules（阶段 B）。
  */
 export function resolveGreetingConfig(input: ResolveGreetingConfigInput): EffectiveGreetingConfig {
   const globalRules = (input.settings?.globalGreetingRules ?? '').trim();
   const profileRules = (input.profile?.greetingRules ?? '').trim();
   const temporaryRule = (input.temporaryRule ?? '').trim();
 
-  // 第 1 层：全局默认（文本指令先解析，显式结构化偏好可同层精确微调）
-  let preferences = applyRuleTextDirectives({ ...DEFAULT_GREETING_PREFERENCES }, globalRules);
-  preferences = mergePreferences(preferences, input.settings?.globalGreetingPreferences);
+  const globalSelection = (input.settings?.globalSelectionRules ?? '').trim();
+  const profileSelection = (input.profile?.selectionRules ?? '').trim();
 
-  // 第 2 层：档案专属（覆盖全局）
-  preferences = applyRuleTextDirectives(preferences, profileRules);
-  preferences = mergePreferences(preferences, input.profile?.greetingPreferences);
+  const globalStruct = normalizeGreetingPreferences(input.settings?.globalGreetingPreferences);
+  const profileStruct = normalizeGreetingPreferences(input.profile?.greetingPreferences);
+  const tempStruct = normalizeGreetingPreferences(input.temporaryPreferences);
 
-  // 第 3 层：单次生成补充要求（覆盖档案与全局）
-  preferences = applyRuleTextDirectives(preferences, temporaryRule);
-  preferences = mergePreferences(preferences, input.temporaryPreferences);
+  const globalText = extractRuleTextDirectives(globalRules);
+  const profileText = extractRuleTextDirectives(profileRules);
+  const tempText = extractRuleTextDirectives(temporaryRule);
 
-  const sections: string[] = [];
-  if (globalRules) sections.push(`[全局默认规则]\n${globalRules}`);
-  if (profileRules) sections.push(`[当前档案专属规则（覆盖全局规则）]\n${profileRules}`);
-  if (temporaryRule) sections.push(`[本次单次补充要求（最高用户优先级）]\n${temporaryRule}`);
+  const globalResolution: RuleConflictResolution = globalStruct?.conflictResolution ?? 'text';
+  const profileResolution: RuleConflictResolution =
+    profileStruct?.conflictResolution ?? globalResolution;
+  const tempResolution: RuleConflictResolution =
+    tempStruct?.conflictResolution ?? profileResolution;
 
-  const combinedRulesText = sections.join('\n\n');
+  const conflicts: RulePreferenceConflict[] = [
+    ...collectLayerConflicts('global', globalText, globalStruct, globalResolution),
+    ...collectLayerConflicts('profile', profileText, profileStruct, profileResolution),
+    ...collectLayerConflicts('temporary', tempText, tempStruct, tempResolution),
+  ];
+
+  const applyLayer = (
+    base: GreetingPreferences,
+    textDir: Partial<GreetingPreferences>,
+    structDir: Partial<GreetingPreferences> | undefined,
+    resolution: RuleConflictResolution,
+  ): GreetingPreferences => {
+    if (resolution === 'structured') {
+      return mergePreferences(mergePreferences(base, textDir), structDir);
+    }
+    return mergePreferences(mergePreferences(base, structDir), textDir);
+  };
+
+  let preferences = { ...DEFAULT_GREETING_PREFERENCES };
+  preferences = applyLayer(preferences, globalText, globalStruct, globalResolution);
+  preferences = applyLayer(preferences, profileText, profileStruct, profileResolution);
+  preferences = applyLayer(preferences, tempText, tempStruct, tempResolution);
+
+  const writingSections: string[] = [];
+  if (globalRules) writingSections.push(`[全局默认规则]\n${globalRules}`);
+  if (profileRules) writingSections.push(`[当前档案专属规则（覆盖全局规则）]\n${profileRules}`);
+  if (temporaryRule) writingSections.push(`[本次单次补充要求（最高用户优先级）]\n${temporaryRule}`);
+
+  const combinedRulesText = writingSections.join('\n\n');
+
+  const gSel = splitSelectionAndWritingRules(globalRules).selectionLines.join('\n');
+  const pSel = splitSelectionAndWritingRules(profileRules).selectionLines.join('\n');
+  const tSel = splitSelectionAndWritingRules(temporaryRule).selectionLines.join('\n');
+
+  const selectionSections: string[] = [];
+  const mergedGlobalSel = [globalSelection, gSel].filter(Boolean).join('\n');
+  const mergedProfileSel = [profileSelection, pSel].filter(Boolean).join('\n');
+  if (mergedGlobalSel) selectionSections.push(`[全局选材偏好]\n${mergedGlobalSel}`);
+  if (mergedProfileSel) selectionSections.push(`[当前档案选材规则（覆盖全局）]\n${mergedProfileSel}`);
+  if (tSel) selectionSections.push(`[本次补充选材要求]\n${tSel}`);
 
   return {
     globalRules,
     profileRules,
     temporaryRule,
     combinedRulesText,
+    effectiveSelectionRules: selectionSections.join('\n\n'),
+    effectiveWritingRules: combinedRulesText,
+    conflicts,
     preferences,
   };
 }
@@ -475,6 +649,9 @@ export function migrateProfile(raw: UserProfile): UserProfile {
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : '',
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
   };
+  if (typeof raw.selectionRules === 'string' && raw.selectionRules.trim()) {
+    migrated.selectionRules = raw.selectionRules.trim();
+  }
   if (Array.isArray(raw.facts)) {
     migrated.facts = normalizeProfileFacts(raw.facts);
   }
@@ -491,6 +668,9 @@ export function migrateSettings(raw: Partial<AppSettings> | undefined): AppSetti
     activeProfileId: raw?.activeProfileId ?? null,
     llm: raw?.llm ?? null,
   };
+  if (typeof raw?.globalSelectionRules === 'string' && raw.globalSelectionRules.trim()) {
+    base.globalSelectionRules = raw.globalSelectionRules.trim();
+  }
   if (typeof raw?.globalGreetingRules === 'string' && raw.globalGreetingRules.trim()) {
     base.globalGreetingRules = raw.globalGreetingRules;
   } else if (raw?.globalGreetingRules === '') {

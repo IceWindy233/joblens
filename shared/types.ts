@@ -55,10 +55,30 @@ export interface ProfileFact {
 }
 
 export type GreetingPresetId = 'concise' | 'technical' | 'achievement' | 'custom';
+export type RuleConflictResolution = 'text' | 'structured';
+
+export type ConflictPreferenceField =
+  | 'singleParagraph'
+  | 'allowLists'
+  | 'maxChars'
+  | 'allowGapExplanation'
+  | 'maxPoints'
+  | 'useExamples';
+
+export interface RulePreferenceConflict {
+  layer: 'global' | 'profile' | 'temporary';
+  field: ConflictPreferenceField;
+  label: string;
+  textValue: string;
+  structuredValue: string;
+  resolvedValue: string;
+}
 
 export interface GreetingPreferences {
   /** 预设风格模板标识（仅作可编辑模板标识，不构成硬编码限制） */
   preset?: GreetingPresetId;
+  /** 同层自由文本规则与结构化参数冲突时的优先策略（默认 'text'：文字规则优先） */
+  conflictResolution?: RuleConflictResolution;
   /** 阶段 A 挑选匹配素材条数上限（1~8，默认 4） */
   maxPoints: number;
   /** 是否允许在素材与打招呼语中主动提及或解释能力差距（默认 false） */
@@ -81,6 +101,12 @@ export interface EffectiveGreetingConfig {
   temporaryRule: string;
   /** 按优先级合并后的完整规则说明文本 */
   combinedRulesText: string;
+  /** 专用于阶段 A（JD 匹配与选材）的有效规则 */
+  effectiveSelectionRules: string;
+  /** 专用于阶段 B（打招呼语表达与格式）的有效规则 */
+  effectiveWritingRules: string;
+  /** 同层自由文本规则与结构化参数冲突明细 */
+  conflicts: RulePreferenceConflict[];
   /** 实际生效的校验与选材参数（已结合自由文本规则做冲突消解） */
   preferences: GreetingPreferences;
 }
@@ -97,6 +123,8 @@ export interface UserProfile {
   targetRoles: string[];
   preferredLocations: string[];
   salaryPreference?: string;
+  /** 选材与岗位重点规则（影响阶段 A 匹配选材，并纳入阶段 A 缓存键） */
+  selectionRules?: string;
   greetingRules: string;
   greetingPreferences?: Partial<GreetingPreferences>;
   version: number;
@@ -112,6 +140,8 @@ export interface LLMConfig {
 export interface AppSettings {
   activeProfileId: string | null;
   llm: LLMConfig | null;
+  /** 全局默认选材与岗位重点规则（影响阶段 A） */
+  globalSelectionRules?: string;
   /** 全局默认打招呼语规则（优先级低于档案规则和单次补充要求） */
   globalGreetingRules?: string;
   /** 全局默认打招呼语格式与选材偏好 */
@@ -165,6 +195,8 @@ export interface AnalysisResult {
   analysisCacheKey?: string;
   /** 阶段 B 打招呼语缓存键 */
   greetingCacheKey?: string;
+  /** JD 内容哈希（用于检测同职位 ID 下正文变更） */
+  jobContentHash?: string;
   model: string;
   createdAt: string;
 }

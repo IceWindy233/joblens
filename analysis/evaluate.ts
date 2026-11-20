@@ -58,11 +58,12 @@ export function evaluateGenerationCase(input: {
   const { job, profile, effective, result, stageAPromptText, stageBPromptText, criteria } = input;
   const details: string[] = [];
 
-  // 1. 事实准确性（基于当前选出素材 + 职位标题 + 能力边界）
-  const facts = [...result.greetingPoints, job.title].join('\n');
+  // 1. 事实准确性（严格使用候选匹配事实，仅允许职位标题中的技术标识词如 Web3/5G）
+  const facts = result.greetingPoints.join('\n');
   const issues = checkGreetingDetailed(result.greeting, facts, {
     preferences: effective.preferences,
     extraNotes: profile.extraNotes,
+    jobTitle: job.title,
   });
   const factIssues = issues.filter((i) => i.kind === 'fact');
   const factualAccuracy = factIssues.length === 0;

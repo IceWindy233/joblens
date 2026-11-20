@@ -195,4 +195,14 @@ describe('analyzeJob', () => {
     expect(k).not.toBe(resultKey('f', 'pa', 2));
     expect(k).not.toBe(resultKey('g', 'pa', 1));
   });
+
+  it('triggers greeting rewrite when draft echoes a requirement number from job title without candidate evidence', async () => {
+    const jobWithYears: Job = { ...job, title: '资深前端开发工程师（5年经验）' };
+    const hallucinated = '您好，我有 5 年前端开发经验，做过 React 组件库。';
+    const { requests, fetchImpl } = modelReplies(JSON.stringify(payload), hallucinated, greeting);
+    const result = await analyzeJob({ ...input, job: jobWithYears }, { fetchImpl });
+    expect(requests).toHaveLength(3);
+    expect(requests[2]!.messages.at(-1)?.content).toContain('数字（5）');
+    expect(result.greeting).toBe(greeting);
+  });
 });

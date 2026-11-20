@@ -1,42 +1,96 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GreetingPreferences } from '../../shared/types';
 import { useAppData } from '../../components/useAppData';
 import {
   DEFAULT_GLOBAL_GREETING_RULES,
   DEFAULT_GREETING_PREFERENCES,
+  diffGreetingPreferences,
   removeProfile,
+  resolveGreetingConfig,
 } from '../../profile/manager';
 import { clearAllData, loadProfiles, removeGreetingExamples, saveProfiles, updateSettings } from '../../storage';
+import {
+  IconBriefcase,
+  IconCheck,
+  IconCpu,
+  IconEdit,
+  IconPlus,
+  IconShield,
+  IconSparkles,
+  IconTrash,
+  IconWand,
+} from '../../components/Icons';
 import { GreetingRulesConfig } from './GreetingRulesConfig';
 import { ModelSettings } from './ModelSettings';
 import { ProfileEditor } from './ProfileEditor';
 
+type NavTab = 'profiles' | 'style' | 'model' | 'privacy';
 type Editing = { mode: 'new' } | { mode: 'edit'; id: string } | null;
 
 export default function App() {
   const data = useAppData();
+  const [nav, setNav] = useState<NavTab>('profiles');
+  const initializedNav = useRef(false);
   const [editing, setEditing] = useState<Editing>(null);
+  const [globalSelectionRules, setGlobalSelectionRules] = useState('');
   const [globalRules, setGlobalRules] = useState('');
   const [globalPrefs, setGlobalPrefs] = useState<GreetingPreferences>(DEFAULT_GREETING_PREFERENCES);
+  const [globalPrefsCustomized, setGlobalPrefsCustomized] = useState(false);
   const [globalStatus, setGlobalStatus] = useState<string | null>(null);
+
+  const modelReady = Boolean(data.settings.llm && data.hasPermission && data.apiKey);
 
   useEffect(() => {
     if (!data.loaded) return;
+    if (!initializedNav.current) {
+      initializedNav.current = true;
+      if (!modelReady) setNav('model');
+    }
+    setGlobalSelectionRules(data.settings.globalSelectionRules ?? '');
     setGlobalRules(data.settings.globalGreetingRules ?? DEFAULT_GLOBAL_GREETING_RULES);
     setGlobalPrefs({
       ...DEFAULT_GREETING_PREFERENCES,
       ...(data.settings.globalGreetingPreferences ?? {}),
     });
-  }, [data.loaded, data.settings.globalGreetingRules, data.settings.globalGreetingPreferences]);
+    setGlobalPrefsCustomized(Boolean(data.settings.globalGreetingPreferences));
+  }, [
+    data.loaded,
+    modelReady,
+    data.settings.globalSelectionRules,
+    data.settings.globalGreetingRules,
+    data.settings.globalGreetingPreferences,
+  ]);
 
-  if (!data.loaded) return <div className="section muted">加载中…</div>;
+  const globalEffectivePreview = useMemo(
+    () =>
+      resolveGreetingConfig({
+        settings: {
+          globalSelectionRules,
+          globalGreetingRules: globalRules,
+          globalGreetingPreferences: globalPrefsCustomized
+            ? diffGreetingPreferences(globalPrefs)
+            : undefined,
+        },
+      }),
+    [globalSelectionRules, globalRules, globalPrefs, globalPrefsCustomized],
+  );
+
+  if (!data.loaded) {
+    return (
+      <div className="opt-shell">
+        <div className="muted">加载中…</div>
+      </div>
+    );
+  }
 
   const onSaveGlobalRules = async () => {
+    const patchPrefs = globalPrefsCustomized ? diffGreetingPreferences(globalPrefs) : {};
     await updateSettings({
+      globalSelectionRules: globalSelectionRules.trim(),
       globalGreetingRules: globalRules.trim(),
-      globalGreetingPreferences: globalPrefs,
+      globalGreetingPreferences: Object.keys(patchPrefs).length ? patchPrefs : undefined,
     });
-    setGlobalStatus('全局默认规则已保存（仅更新打招呼语风格，不会触发重新分析旧 JD）');
+    setGlobalStatus('全局默认规则已保存');
   };
 
   const onDelete = async (id: string, name: string) => {
@@ -58,114 +112,310 @@ export default function App() {
   const editingProfile =
     editing?.mode === 'edit' ? (data.profiles.find((p) => p.id === editing.id) ?? null) : null;
 
+  const switchNav = (next: NavTab) => {
+    setNav(next);
+    if (next !== 'profiles') setEditing(null);
+  };
+
   return (
-    <div style={{ maxWidth: 780, margin: '0 auto', padding: '16px 0 48px' }}>
-      <div className="section">
-        <h1>JobLens · 职镜 设置</h1>
-        <p className="muted">
-          所有档案与设置保存在本机浏览器中；只有你点击“整理档案”、“分析”或“仅重新生成打招呼语”时，相关文字才会发送给你配置的模型服务商。
-        </p>
-      </div>
+    <div className="opt-shell">
+      {/* 左侧边导航 */}
+      <aside className="opt-sidebar">
+        <div className="brand-box">
+          <div className="brand-logo">
+            <IconSparkles size={17} />
+          </div>
+          <div className="stack-sm" style={{ gap: 0 }}>
+            <strong style={{ fontSize: 15 }}>JobLens · 职镜</strong>
+            <span className="muted">本地求职助手设置</span>
+          </div>
+        </div>
 
-      <div className="section">
-        <ModelSettings
-          settings={data.settings}
-          apiKey={data.apiKey}
-          apiKeyPersisted={data.apiKeyPersisted}
-          hasPermission={data.hasPermission}
-        />
-      </div>
-
-      <div className="section stack">
-        <h2>全局默认打招呼语规则</h2>
-        <p className="muted">
-          适用于所有档案。规则优先级：<strong>内置事实与安全约束 &gt; 单次生成补充要求 &gt; 档案专属规则 &gt; 全局默认规则</strong>；同一层级冲突以后配置覆盖先配置。
-        </p>
-        <GreetingRulesConfig
-          title="全局规则与校验偏好"
-          description="未在档案中单独覆盖时生效；不会影响岗位匹配评分、优势与差距判断。"
-          rules={globalRules}
-          preferences={globalPrefs}
-          onRulesChange={(r) => {
-            setGlobalRules(r);
-            setGlobalStatus(null);
-          }}
-          onPreferencesChange={(p) => {
-            setGlobalPrefs(p);
-            setGlobalStatus(null);
-          }}
-          defaultRulesText={DEFAULT_GLOBAL_GREETING_RULES}
-          defaultPreferences={DEFAULT_GREETING_PREFERENCES}
-          textareaAriaLabel="全局默认打招呼语规则"
-          placeholder="可选：填写适用于所有求职方向的默认要求，例如语言风格、技术细节密度或固定结尾。"
-        />
-        <div className="row">
-          <button className="primary" onClick={() => void onSaveGlobalRules()}>
-            保存全局规则
+        <nav className="opt-nav" aria-label="设置分区">
+          <button
+            type="button"
+            className={`opt-nav-item ${nav === 'profiles' ? 'active' : ''}`}
+            onClick={() => switchNav('profiles')}
+          >
+            <span className="row-sm">
+              <IconBriefcase size={15} />
+              简历档案
+            </span>
+            <span className="badge">{data.profiles.length}</span>
           </button>
-          {globalStatus && <span className="muted">{globalStatus}</span>}
-        </div>
-      </div>
 
-      <div className="section stack">
-        <div className="row between">
-          <h2>简历档案</h2>
-          <button className="primary" onClick={() => setEditing({ mode: 'new' })}>新建档案</button>
+          <button
+            type="button"
+            className={`opt-nav-item ${nav === 'style' ? 'active' : ''}`}
+            onClick={() => switchNav('style')}
+          >
+            <span className="row-sm">
+              <IconWand size={15} />
+              写作风格
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={`opt-nav-item ${nav === 'model' ? 'active' : ''}`}
+            onClick={() => switchNav('model')}
+          >
+            <span className="row-sm">
+              <IconCpu size={15} />
+              模型连接
+            </span>
+            <span
+              className={`status-dot ${modelReady ? 'ok' : 'warn'}`}
+              title={modelReady ? '已就绪' : '待配置'}
+            />
+          </button>
+
+          <button
+            type="button"
+            className={`opt-nav-item ${nav === 'privacy' ? 'active' : ''}`}
+            onClick={() => switchNav('privacy')}
+          >
+            <span className="row-sm">
+              <IconShield size={15} />
+              数据与隐私
+            </span>
+          </button>
+        </nav>
+
+        <div className="panel-card subtle stack-sm">
+          <span className="muted" style={{ lineHeight: 1.5 }}>
+            所有数据均保存在本机浏览器。只有你主动点击按钮时，才会向你配置的模型发送文字。
+          </span>
         </div>
-        {data.profiles.length === 0 && <div className="muted">尚无档案，请上传简历创建。</div>}
-        {data.profiles.map((p) => {
-          const active = p.id === data.settings.activeProfileId;
-          return (
-            <div key={p.id} className={`card row between ${active ? 'active' : ''}`}>
-              <div>
-                <div style={{ fontWeight: 600 }}>
-                  {p.name} {active && <span className="badge ok">当前</span>}
+      </aside>
+
+      {/* 右侧内容工作区 */}
+      <main className="opt-main">
+        {/* 初次使用引导条 */}
+        {(!modelReady || data.profiles.length === 0) && (
+          <div className="notice info row wrap">
+            <span className="small">
+              快速开始：
+              <strong>1. 连接模型</strong> {modelReady ? '✓' : '（进行中）'} →{' '}
+              <strong>2. 新建简历档案</strong> {data.profiles.length > 0 ? '✓' : '（待完成）'} → 打开 BOSS 职位页使用侧边栏
+            </span>
+            {modelReady && data.profiles.length === 0 && nav !== 'profiles' && (
+              <button type="button" className="primary small" onClick={() => switchNav('profiles')}>
+                去建档案
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* 1. 简历档案 */}
+        {nav === 'profiles' && (
+          editing ? (
+            <ProfileEditor
+              key={editing.mode === 'edit' ? editing.id : 'new'}
+              existing={editingProfile}
+              settings={data.settings}
+              apiKey={data.apiKey}
+              onDone={() => setEditing(null)}
+            />
+          ) : (
+            <div className="stack-lg">
+              <div className="opt-page-header">
+                <div className="stack-sm">
+                  <h1>简历档案</h1>
+                  <span className="muted">为不同求职方向分别维护档案、事实边界与专属沟通风格，分析时完全隔离。</span>
                 </div>
-                <div className="muted">
-                  {p.resumeFileName || '手动创建'} · v{p.version} · 结构化事实 {p.facts?.length ?? 0} 条 · 更新于 {new Date(p.updatedAt).toLocaleString()}
-                </div>
+                <button type="button" className="primary" onClick={() => setEditing({ mode: 'new' })}>
+                  <IconPlus size={15} />
+                  新建档案
+                </button>
               </div>
-              <div className="row">
-                {!active && (
-                  <button onClick={() => void updateSettings({ activeProfileId: p.id })}>设为当前</button>
-                )}
-                <button onClick={() => setEditing({ mode: 'edit', id: p.id })}>编辑</button>
-                <button className="danger" onClick={() => void onDelete(p.id, p.name)}>删除</button>
+
+              {data.profiles.length === 0 ? (
+                <div className="panel-card stack" style={{ padding: '28px 20px', alignItems: 'flex-start' }}>
+                  <h3>还没有简历档案</h3>
+                  <span className="muted">
+                    支持上传文字版 PDF / DOCX 简历自动提取整理，也可直接手写核心经历与能力边界。
+                  </span>
+                  <button type="button" className="primary" onClick={() => setEditing({ mode: 'new' })}>
+                    <IconPlus size={15} />
+                    创建第一份档案
+                  </button>
+                </div>
+              ) : (
+                <div className="stack">
+                  {data.profiles.map((p) => {
+                    const active = p.id === data.settings.activeProfileId;
+                    return (
+                      <div key={p.id} className={`panel-card row between wrap ${active ? 'active' : ''}`}>
+                        <div className="stack-sm grow" style={{ minWidth: 0 }}>
+                          <div className="row-sm wrap">
+                            <strong style={{ fontSize: 14.5 }}>{p.name}</strong>
+                            {active && <span className="badge ok">当前使用</span>}
+                            <span className="badge">v{p.version}</span>
+                            {p.facts && p.facts.length > 0 && (
+                              <span className="badge primary">事实 {p.facts.length} 条</span>
+                            )}
+                          </div>
+                          <div className="muted truncate">
+                            {p.resumeFileName || '手动创建'} · 更新于 {new Date(p.updatedAt).toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="row-sm">
+                          {!active && (
+                            <button
+                              type="button"
+                              className="small"
+                              onClick={() => void updateSettings({ activeProfileId: p.id })}
+                            >
+                              设为当前
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="small"
+                            onClick={() => setEditing({ mode: 'edit', id: p.id })}
+                          >
+                            <IconEdit size={13} />
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost danger icon-btn small"
+                            title={`删除档案 ${p.name}`}
+                            aria-label={`删除档案 ${p.name}`}
+                            onClick={() => void onDelete(p.id, p.name)}
+                          >
+                            <IconTrash size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        )}
+
+        {/* 2. 全局写作风格 */}
+        {nav === 'style' && (
+          <div className="stack-lg">
+            <div className="opt-page-header">
+              <div className="stack-sm">
+                <h1>全局写作风格</h1>
+                <span className="muted">适用于所有档案的默认打招呼语规则；在具体档案中可随时覆盖。</span>
               </div>
             </div>
-          );
-        })}
-        {editing && (
-          <ProfileEditor
-            key={editing.mode === 'edit' ? editing.id : 'new'}
-            existing={editingProfile}
-            settings={data.settings}
-            apiKey={data.apiKey}
-            onDone={() => setEditing(null)}
-          />
-        )}
-      </div>
 
-      <div className="section stack">
-        <h2>规则层级、缓存与隐私说明</h2>
-        <div className="muted stack">
-          <div>
-            <strong>不可覆盖约束：</strong>真实性（不虚构经历、年限、项目或成果）、证据边界（个人项目不写成企业生产经验，区分“简历未体现”与“已确认不具备”）、结构化输出、多档案数据隔离及不自动发送消息。
+            <div className="panel-card subtle row between wrap">
+              <span className="small" style={{ fontWeight: 500 }}>规则生效优先级</span>
+              <div className="priority-strip">
+                <span className="badge ok">内置事实约束</span>
+                <span className="priority-arrow">&gt;</span>
+                <span className="badge info">单次补充要求</span>
+                <span className="priority-arrow">&gt;</span>
+                <span className="badge primary">档案专属规则</span>
+                <span className="priority-arrow">&gt;</span>
+                <span className="badge">全局默认规则</span>
+              </div>
+            </div>
+
+            <GreetingRulesConfig
+              title="全局默认规则与校验偏好"
+              description="只影响打招呼语的选材倾向与表达方式，不会影响岗位匹配评分、优势或差距分析。"
+              selectionRules={globalSelectionRules}
+              onSelectionRulesChange={(s) => {
+                setGlobalSelectionRules(s);
+                setGlobalStatus(null);
+              }}
+              rules={globalRules}
+              preferences={globalPrefs}
+              onRulesChange={(r) => {
+                setGlobalRules(r);
+                setGlobalStatus(null);
+              }}
+              onPreferencesChange={(p) => {
+                setGlobalPrefs(p);
+                setGlobalPrefsCustomized(true);
+                setGlobalStatus(null);
+              }}
+              defaultRulesText={DEFAULT_GLOBAL_GREETING_RULES}
+              defaultPreferences={DEFAULT_GREETING_PREFERENCES}
+              effectivePreview={globalEffectivePreview}
+              conflicts={globalEffectivePreview.conflicts}
+              textareaAriaLabel="全局默认打招呼语规则"
+              placeholder="可选：填写适用于所有求职方向的默认要求，例如语言风格、技术细节密度或固定结尾。"
+            />
+
+            <div className="row">
+              <button type="button" className="primary" onClick={() => void onSaveGlobalRules()}>
+                <IconCheck size={14} />
+                保存全局规则
+              </button>
+              {globalStatus && <span className="muted">{globalStatus}</span>}
+            </div>
           </div>
-          <div>
-            <strong>可自由定制项：</strong>选材数量与重点、表达语气、技术术语密度、篇幅长度、单段/分段、是否允许列表、是否主动解释能力差距、固定结尾及样例参考开关。
+        )}
+
+        {/* 3. 模型连接 */}
+        {nav === 'model' && (
+          <div className="stack-lg">
+            <div className="opt-page-header">
+              <div className="stack-sm">
+                <h1>模型连接</h1>
+                <span className="muted">配置你自己的 OpenAI 兼容接口地址与 API Key。</span>
+              </div>
+            </div>
+            <ModelSettings
+              settings={data.settings}
+              apiKey={data.apiKey}
+              apiKeyPersisted={data.apiKeyPersisted}
+              hasPermission={data.hasPermission}
+            />
           </div>
-          <div>
-            <strong>两阶段缓存与事实核验：</strong>匹配分析与打招呼语分别缓存。切换模型、更改写作规则或样例后会自动刷新对应阶段缓存；本地检查仅覆盖部分数字与格式问题，不能替代人工全面事实核验。
+        )}
+
+        {/* 4. 数据与隐私 */}
+        {nav === 'privacy' && (
+          <div className="stack-lg">
+            <div className="opt-page-header">
+              <div className="stack-sm">
+                <h1>数据与隐私</h1>
+                <span className="muted">清楚了解哪些规则不可覆盖、本地数据存放在哪里以及何时离开浏览器。</span>
+              </div>
+            </div>
+
+            <div className="panel-card stack">
+              <h3>内置安全与事实边界</h3>
+              <div className="stack-sm small" style={{ color: 'var(--fg-secondary)' }}>
+                <div>
+                  <strong>不可覆盖约束：</strong>真实性（不虚构经历、年限、项目或成果）、证据边界（个人项目不写成企业生产经验，区分“简历未体现”与“已确认不具备”）、多档案数据隔离及不自动发送消息。
+                </div>
+                <div>
+                  <strong>可自由定制项：</strong>选材数量与重点、语气风格、技术细节密度、篇幅字数、单段/分段、是否允许列表、是否主动解释能力差距、固定结尾与样例开关。
+                </div>
+                <div>
+                  <strong>两阶段缓存与人工核对：</strong>匹配分析与打招呼语分别缓存；本地检查仅覆盖部分数字与格式问题，不能替代人工全面事实核验。
+                </div>
+                <div>
+                  <strong>隐私边界：</strong>分析岗位时仅发送当前职位、档案摘要/结构化事实与选中样例，绝不发送原始简历全文；扩展不读取招聘平台 Cookie 或密码。
+                </div>
+              </div>
+            </div>
+
+            <div className="panel-card row between wrap">
+              <div className="stack-sm">
+                <strong style={{ color: 'var(--danger)' }}>清除全部本地数据</strong>
+                <span className="muted">删除所有简历档案、历史样例、全局规则、模型设置与 API Key，不可恢复。</span>
+              </div>
+              <button type="button" className="danger" onClick={() => void onClearAll()}>
+                <IconTrash size={14} />
+                清除全部数据
+              </button>
+            </div>
           </div>
-          <div>
-            <strong>隐私边界：</strong>远程 API 服务商仅收到当前职位内容、个人档案摘要/结构化事实和选中的打招呼语样例，分析时不会发送原始简历全文。插件不读取招聘平台 Cookie 或密码。
-          </div>
-        </div>
-        <div>
-          <button className="danger" onClick={() => void onClearAll()}>清除全部本地数据</button>
-        </div>
-      </div>
+        )}
+      </main>
     </div>
   );
 }

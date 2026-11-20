@@ -12,7 +12,7 @@ import type {
 import { AppError } from '../shared/errors';
 import { parseModelJSON } from '../shared/json';
 import { isJob } from '../shared/messages';
-import { cyrb53 } from '../shared/text';
+import { cyrb53, squashWhitespace } from '../shared/text';
 import { chatCompletion, type ChatMessage } from '../llm/client';
 import { resolveGreetingConfig } from '../profile/manager';
 import {
@@ -59,6 +59,7 @@ export interface CacheKeyOptions {
 
 export interface MatchAnalysisResult extends AnalysisPayload {
   jobFingerprint: string;
+  jobContentHash: string;
   profileId: string;
   profileVersion: number;
   model: string;
@@ -114,6 +115,11 @@ export function resultKey(
   ].join('\u0000');
 }
 
+/** 计算规范化后的 JD 正文内容哈希（检测同一职位 ID 下 JD 内容更新）。 */
+export function computeJobContentHash(job: Pick<Job, 'title' | 'company' | 'description'>): string {
+  return cyrb53([job.title, job.company, job.description].map(squashWhitespace).join('|'));
+}
+
 /** 计算档案核心事实指纹（不含纯写作规则，避免修改写作风格时误使匹配分析失效）。 */
 export function profileFactsFingerprint(profile: UserProfile): string {
   return cyrb53(
@@ -128,24 +134,33 @@ export function profileFactsFingerprint(profile: UserProfile): string {
   );
 }
 
-/** 阶段 A 匹配分析缓存键：JD 指纹 + Profile ID + 档案事实指纹 + 模型服务商与模型 + 分析 Prompt 版本 + 选材参数。 */
+/**
+ * 阶段 A 匹配分析缓存键：
+ * 包含 JD 指纹、JD 内容哈希、Profile ID、档案事实指纹、选材规则（selectionRules）、选材参数、模型与 Prompt 版本。
+ */
 export function buildAnalysisCacheKey(input: {
   jobFingerprint: string;
+  jobContentHash?: string;
+  job?: Pick<Job, 'title' | 'company' | 'description'>;
   profile: UserProfile;
   config: LLMConfig;
   preferences: Pick<GreetingPreferences, 'maxPoints' | 'allowGapExplanation'>;
+  selectionRules?: string;
 }): string {
+  const contentHash = input.jobContentHash ?? (input.job ? computeJobContentHash(input.job) : '');
   const factsHash = profileFactsFingerprint(input.profile);
   const analysisParamsHash = cyrb53(
     JSON.stringify({
       maxPoints: input.preferences.maxPoints,
       allowGapExplanation: input.preferences.allowGapExplanation,
+      selectionRules: (input.selectionRules ?? '').trim(),
     }),
   );
   return [
     'A',
     ANALYSIS_PROMPT_VERSION,
     input.jobFingerprint,
+    contentHash,
     input.profile.id,
     factsHash,
     input.config.baseURL,
@@ -154,9 +169,11 @@ export function buildAnalysisCacheKey(input: {
   ].join('\u0000');
 }
 
-/** 阶段 B 打招呼语缓存键：JD 指纹 + Profile ID + 模型 + 写作规则与参数 + 样例内容摘要 + 匹配素材 + 生成 Prompt 版本。 */
+/** 阶段 B 打招呼语缓存键：JD 指纹 + JD 内容哈希 + Profile ID + 模型 + 写作规则与参数 + 样例摘要 + 匹配素材 + Prompt 版本。 */
 export function buildGreetingCacheKey(input: {
   jobFingerprint: string;
+  jobContentHash?: string;
+  job?: Pick<Job, 'title' | 'company' | 'description'>;
   profileId: string;
   config: LLMConfig;
   points: string[];
@@ -164,6 +181,7 @@ export function buildGreetingCacheKey(input: {
   preferences: GreetingPreferences;
   examples: GreetingExample[];
 }): string {
+  const contentHash = input.jobContentHash ?? (input.job ? computeJobContentHash(input.job) : '');
   const pointsHash = cyrb53(JSON.stringify(input.points));
   const rulesHash = cyrb53(
     JSON.stringify({
@@ -186,6 +204,7 @@ export function buildGreetingCacheKey(input: {
     'B',
     GREETING_PROMPT_VERSION,
     input.jobFingerprint,
+    contentHash,
     input.profileId,
     input.config.baseURL,
     input.config.model,
@@ -250,17 +269,22 @@ export async function analyzeJobMatch(
     throw new AppError('LLM_BAD_OUTPUT', `模型返回格式无效：${v.errors.slice(0, 3).join('；')}`);
   }
 
+  const jobContentHash = computeJobContentHash(job);
+
   return {
     ...v.value,
     jobFingerprint: job.fingerprint,
+    jobContentHash,
     profileId: profile.id,
     profileVersion: profile.version,
     model: config.model,
     analysisCacheKey: buildAnalysisCacheKey({
       jobFingerprint: job.fingerprint,
+      jobContentHash,
       profile,
       config,
       preferences: effective.preferences,
+      selectionRules: effective.effectiveSelectionRules,
     }),
     createdAt: (deps.now?.() ?? new Date()).toISOString(),
   };
@@ -277,48 +301,53 @@ export async function generateGreetingOnly(
   const effective = resolveEffectiveConfigFromInput(input);
   const call = createLLMCaller(config, apiKey, signal, deps);
 
-  const facts = [...points, job.title].join('\n');
+  const candidateFacts = points.join('\n');
   const selected = selectGreetingExamples(job, profile.id, examples, {
     enabled: effective.preferences.useExamples,
   });
   const messages = buildGreetingMessages(
     job,
     points,
-    effective.combinedRulesText,
+    effective.effectiveWritingRules,
     selected,
     effective.preferences,
   );
 
   let greeting = cleanGreeting(await call(messages, false, 0.5));
-  let greetingIssueDetails = checkGreetingDetailed(greeting, facts, {
+  let greetingIssueDetails = checkGreetingDetailed(greeting, candidateFacts, {
     preferences: effective.preferences,
     extraNotes: profile.extraNotes,
+    jobTitle: job.title,
   });
 
   if (greetingIssueDetails.length) {
     const issueMessages = greetingIssueDetails.map((d) => d.message);
     const revision = [...messages, ...buildGreetingRevision(greeting, issueMessages)];
     greeting = cleanGreeting(await call(revision, false, 0.5));
-    greetingIssueDetails = checkGreetingDetailed(greeting, facts, {
+    greetingIssueDetails = checkGreetingDetailed(greeting, candidateFacts, {
       preferences: effective.preferences,
       extraNotes: profile.extraNotes,
+      jobTitle: job.title,
     });
   }
 
   if (!greeting) throw new AppError('LLM_BAD_OUTPUT', '模型未返回打招呼语');
 
+  const jobContentHash = computeJobContentHash(job);
+
   return {
     greeting,
     greetingIssues: greetingIssueDetails.map((d) => d.message),
     greetingIssueDetails,
-    effectiveRules: effective.combinedRulesText,
+    effectiveRules: effective.effectiveWritingRules,
     effectivePreferences: effective.preferences,
     greetingCacheKey: buildGreetingCacheKey({
       jobFingerprint: job.fingerprint,
+      jobContentHash,
       profileId: profile.id,
       config,
       points,
-      effectiveRules: effective.combinedRulesText,
+      effectiveRules: effective.effectiveWritingRules,
       preferences: effective.preferences,
       examples: selected,
     }),
@@ -365,6 +394,7 @@ export async function analyzeJob(input: AnalyzeInput, deps: AnalyzeDeps = {}): P
     effectivePreferences: generated.effectivePreferences,
     analysisCacheKey: match.analysisCacheKey,
     greetingCacheKey: generated.greetingCacheKey,
+    jobContentHash: match.jobContentHash,
     jobFingerprint: match.jobFingerprint,
     profileId: match.profileId,
     profileVersion: match.profileVersion,

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AnalysisResult,
   AppSettings,
+  GreetingCheckIssue,
   GreetingExample,
+  GreetingPreferences,
   Job,
   LLMConfig,
   UserProfile,
@@ -12,6 +14,7 @@ import {
   analyzeJobMatch,
   buildAnalysisCacheKey,
   buildGreetingCacheKey,
+  computeJobContentHash,
   generateGreetingOnly,
   resolveEffectiveConfigFromInput,
   type GenerateGreetingOutput,
@@ -27,30 +30,93 @@ export type AnalysisView =
   | { kind: 'error'; error: AppError }
   | { kind: 'done'; result: AnalysisResult };
 
-interface PairGreetingState {
+/** 单个打招呼语版本的完整原子快照：正文、校验状态、规则摘要与缓存键严格绑定 */
+export interface GreetingVersion {
   text: string;
   edited: boolean;
-  previous: string | null;
-  pending: GenerateGreetingOutput | null;
+  greetingIssues: string[];
+  greetingIssueDetails: GreetingCheckIssue[];
+  effectiveRules: string;
+  effectivePreferences: GreetingPreferences;
+  greetingCacheKey: string;
+  model: string;
+  createdAt: string;
+}
+
+interface PairState {
+  match: MatchAnalysisResult;
+  current: GreetingVersion;
+  previous: GreetingVersion | null;
+  pending: GreetingVersion | null;
+}
+
+export interface StartAnalysisOptions {
+  /** 是否跳过阶段 A 缓存强制重新分析匹配度（默认 false） */
+  forceMatch?: boolean;
+  /** 是否跳过阶段 B 缓存强制重新撰写打招呼语（默认 false） */
+  forceGreeting?: boolean;
+}
+
+export interface RegenerateGreetingOptions {
+  /** 是否跳过阶段 B 缓存强制重新生成（点击“重写”时默认为 true） */
+  force?: boolean;
 }
 
 function pairKey(fingerprint: string, profileId: string): string {
   return `${fingerprint}\u0000${profileId}`;
 }
 
+function toGreetingVersion(out: GenerateGreetingOutput): GreetingVersion {
+  return {
+    text: out.greeting,
+    edited: false,
+    greetingIssues: out.greetingIssues,
+    greetingIssueDetails: out.greetingIssueDetails,
+    effectiveRules: out.effectiveRules,
+    effectivePreferences: out.effectivePreferences,
+    greetingCacheKey: out.greetingCacheKey,
+    model: out.model,
+    createdAt: out.createdAt,
+  };
+}
+
+function composeAnalysisResult(match: MatchAnalysisResult, version: GreetingVersion): AnalysisResult {
+  return {
+    matchScore: match.matchScore,
+    recommendation: match.recommendation,
+    summary: match.summary,
+    strengths: match.strengths,
+    gaps: match.gaps,
+    greetingPoints: match.greetingPoints,
+    greeting: version.text,
+    greetingIssues: version.greetingIssues,
+    greetingIssueDetails: version.greetingIssueDetails,
+    effectiveRules: version.effectiveRules,
+    effectivePreferences: version.effectivePreferences,
+    analysisCacheKey: match.analysisCacheKey,
+    greetingCacheKey: version.greetingCacheKey,
+    jobContentHash: match.jobContentHash,
+    jobFingerprint: match.jobFingerprint,
+    profileId: match.profileId,
+    profileVersion: match.profileVersion,
+    model: version.model,
+    createdAt: version.createdAt,
+  };
+}
+
 /**
- * 两阶段结果缓存与编辑状态管理：
- * - 阶段 A（匹配分析）按 analysisCacheKey 缓存；仅改写作规则不失效；
- * - 阶段 B（打招呼语）按 greetingCacheKey 缓存；切换模型/改规则/改样例即时感知；
- * - 用户手动编辑打招呼语后，重新生成绝不自动覆盖，而是放入 pending 供对比采纳。
+ * 两阶段结果缓存与原子版本状态管理：
+ * - 阶段 A（匹配分析）按 JD 内容哈希 + 档案事实 + 选材规则 + 模型缓存；
+ * - 阶段 B（打招呼语）按阶段 A 素材 + 写作规则 + 样例摘要缓存并真正读取复用；
+ * - 阶段 A 过期时禁止单独用旧 greetingPoints 重写；
+ * - 每个打招呼语版本绑定正文、校验问题与缓存键，绝不交叉污染。
  */
 export function useAnalysis(job: Job | null, profile: UserProfile | null, settings?: AppSettings) {
-  const results = useRef(new Map<string, AnalysisResult>());
+  const pairStates = useRef(new Map<string, PairState>());
   const matchCache = useRef(new Map<string, MatchAnalysisResult>());
   const greetingCache = useRef(new Map<string, GenerateGreetingOutput>());
   const errors = useRef(new Map<string, AppError>());
   const inflight = useRef(new Map<string, { controller: AbortController; phase: 'analyzing' | 'greeting' }>());
-  const greetingStates = useRef(new Map<string, PairGreetingState>());
   const tempRules = useRef(new Map<string, string>());
   const useExamplesMap = useRef(new Map<string, boolean | undefined>());
 
@@ -65,7 +131,7 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
     [],
   );
 
-  // 实时加载当前档案样例并订阅存储变化，确保在设置页增删改样例时能及时检测缓存失效
+  // 实时加载当前档案样例并订阅存储变化，确保增删改样例时及时感知缓存变化
   useEffect(() => {
     if (!profile?.id) {
       setExamples([]);
@@ -102,95 +168,105 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
     });
   }, [profile, settings, temporaryRule, useExamplesOverride]);
 
+  const jobContentHash = useMemo(() => (job ? computeJobContentHash(job) : ''), [job]);
+
   const currentAnalysisKey = useMemo(() => {
     if (!job || !profile || !settings?.llm || !effectiveConfig) return null;
     return buildAnalysisCacheKey({
       jobFingerprint: job.fingerprint,
+      jobContentHash,
       profile,
       config: settings.llm,
       preferences: effectiveConfig.preferences,
+      selectionRules: effectiveConfig.effectiveSelectionRules,
     });
-  }, [job, profile, settings?.llm, effectiveConfig]);
+  }, [job, jobContentHash, profile, settings?.llm, effectiveConfig]);
 
-  const activeResult = key ? results.current.get(key) : undefined;
+  const activePair = key ? pairStates.current.get(key) : undefined;
+  const activeResult = activePair ? composeAnalysisResult(activePair.match, activePair.current) : undefined;
 
   const currentGreetingKey = useMemo(() => {
-    if (!job || !profile || !settings?.llm || !effectiveConfig || !activeResult) return null;
+    if (!job || !profile || !settings?.llm || !effectiveConfig || !activePair) return null;
     const selected = selectGreetingExamples(job, profile.id, examples, {
       enabled: effectiveConfig.preferences.useExamples,
     });
     return buildGreetingCacheKey({
       jobFingerprint: job.fingerprint,
+      jobContentHash,
       profileId: profile.id,
       config: settings.llm,
-      points: activeResult.greetingPoints,
-      effectiveRules: effectiveConfig.combinedRulesText,
+      points: activePair.match.greetingPoints,
+      effectiveRules: effectiveConfig.effectiveWritingRules,
       preferences: effectiveConfig.preferences,
       examples: selected,
     });
-  }, [job, profile, settings?.llm, effectiveConfig, activeResult, examples]);
+  }, [job, jobContentHash, profile, settings?.llm, effectiveConfig, activePair, examples]);
 
   let view: AnalysisView = { kind: 'none' };
   if (key) {
     const running = inflight.current.get(key);
-    const r = results.current.get(key);
     const e = errors.current.get(key);
     if (running) view = { kind: 'running', phase: running.phase };
-    else if (r) view = { kind: 'done', result: r };
+    else if (activeResult) view = { kind: 'done', result: activeResult };
     else if (e) view = { kind: 'error', error: e };
     else view = { kind: 'idle' };
   }
 
-  const analysisStale =
-    Boolean(activeResult && currentAnalysisKey && activeResult.analysisCacheKey !== currentAnalysisKey);
-  const greetingStale =
-    Boolean(
-      !analysisStale &&
-        activeResult &&
-        currentGreetingKey &&
-        activeResult.greetingCacheKey !== currentGreetingKey,
-    );
+  const analysisStale = Boolean(
+    activePair && currentAnalysisKey && activePair.match.analysisCacheKey !== currentAnalysisKey,
+  );
+  const greetingStale = Boolean(
+    !analysisStale &&
+      activePair &&
+      currentGreetingKey &&
+      activePair.current.greetingCacheKey !== currentGreetingKey,
+  );
+  const hasCachedGreeting = Boolean(
+    !analysisStale && greetingStale && currentGreetingKey && greetingCache.current.has(currentGreetingKey),
+  );
 
-  const applyGeneratedGreeting = useCallback(
-    (k: string, baseResult: AnalysisResult, generated: GenerateGreetingOutput) => {
-      const prevState = greetingStates.current.get(k);
-      const currentText = prevState?.text ?? baseResult.greeting;
+  const commitVersion = useCallback(
+    (k: string, match: MatchAnalysisResult, generated: GenerateGreetingOutput) => {
+      const nextVersion = toGreetingVersion(generated);
+      const prevPair = pairStates.current.get(k);
 
-      if (prevState?.edited && currentText !== generated.greeting) {
-        // 保留用户已编辑文本，新版本放入 pending 供对比采纳
-        greetingStates.current.set(k, {
-          ...prevState,
-          pending: generated,
+      if (!prevPair) {
+        pairStates.current.set(k, {
+          match,
+          current: nextVersion,
+          previous: null,
+          pending: null,
         });
-        results.current.set(k, baseResult);
+        return;
+      }
+
+      if (prevPair.current.edited && prevPair.current.text !== nextVersion.text) {
+        // 保留用户已编辑版本的正文与全部元数据，不交叉覆盖校验/缓存键；新版本整体存入 pending
+        pairStates.current.set(k, {
+          match,
+          current: prevPair.current,
+          previous: prevPair.previous,
+          pending: nextVersion,
+        });
         return;
       }
 
       const nextPrevious =
-        currentText && currentText !== generated.greeting ? currentText : (prevState?.previous ?? null);
-      greetingStates.current.set(k, {
-        text: generated.greeting,
-        edited: false,
+        prevPair.current.text && prevPair.current.text !== nextVersion.text
+          ? prevPair.current
+          : prevPair.previous;
+      pairStates.current.set(k, {
+        match,
+        current: nextVersion,
         previous: nextPrevious,
         pending: null,
-      });
-      results.current.set(k, {
-        ...baseResult,
-        greeting: generated.greeting,
-        greetingIssues: generated.greetingIssues,
-        greetingIssueDetails: generated.greetingIssueDetails,
-        effectiveRules: generated.effectiveRules,
-        effectivePreferences: generated.effectivePreferences,
-        greetingCacheKey: generated.greetingCacheKey,
-        model: generated.model,
-        createdAt: generated.createdAt,
       });
     },
     [],
   );
 
   const start = useCallback(
-    async (config: LLMConfig, apiKey: string) => {
+    async (config: LLMConfig, apiKey: string, options: StartAnalysisOptions = {}) => {
       if (!job || !profile) return;
       const k = pairKey(job.fingerprint, profile.id);
       if (inflight.current.has(k)) return;
@@ -201,6 +277,7 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
 
       const tempRule = tempRules.current.get(k) ?? '';
       const useEx = useExamplesMap.current.get(k);
+      const contentHash = computeJobContentHash(job);
 
       try {
         const eff = resolveEffectiveConfigFromInput({
@@ -211,12 +288,14 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
         });
         const aKey = buildAnalysisCacheKey({
           jobFingerprint: job.fingerprint,
+          jobContentHash: contentHash,
           profile,
           config,
           preferences: eff.preferences,
+          selectionRules: eff.effectiveSelectionRules,
         });
 
-        let match = matchCache.current.get(aKey);
+        let match = options.forceMatch ? undefined : matchCache.current.get(aKey);
         if (!match) {
           match = await analyzeJobMatch({
             job,
@@ -237,41 +316,38 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
 
         const latestExamples = await loadGreetingExamples(profile.id);
         setExamples(latestExamples);
-        const generated = await generateGreetingOnly({
-          job,
-          points: match.greetingPoints,
-          profile,
-          examples: latestExamples,
-          config,
-          apiKey,
-          signal: controller.signal,
-          settings,
-          temporaryRule: tempRule,
-          useExamples: useEx,
+        const selected = selectGreetingExamples(job, profile.id, latestExamples, {
+          enabled: eff.preferences.useExamples,
         });
-        greetingCache.current.set(generated.greetingCacheKey, generated);
+        const gKey = buildGreetingCacheKey({
+          jobFingerprint: job.fingerprint,
+          jobContentHash: contentHash,
+          profileId: profile.id,
+          config,
+          points: match.greetingPoints,
+          effectiveRules: eff.effectiveWritingRules,
+          preferences: eff.preferences,
+          examples: selected,
+        });
 
-        const baseResult: AnalysisResult = {
-          matchScore: match.matchScore,
-          recommendation: match.recommendation,
-          summary: match.summary,
-          strengths: match.strengths,
-          gaps: match.gaps,
-          greetingPoints: match.greetingPoints,
-          greeting: results.current.get(k)?.greeting ?? generated.greeting,
-          greetingIssues: generated.greetingIssues,
-          greetingIssueDetails: generated.greetingIssueDetails,
-          effectiveRules: generated.effectiveRules,
-          effectivePreferences: generated.effectivePreferences,
-          analysisCacheKey: match.analysisCacheKey,
-          greetingCacheKey: generated.greetingCacheKey,
-          jobFingerprint: match.jobFingerprint,
-          profileId: match.profileId,
-          profileVersion: match.profileVersion,
-          model: match.model,
-          createdAt: generated.createdAt,
-        };
-        applyGeneratedGreeting(k, baseResult, generated);
+        let generated = options.forceGreeting ? undefined : greetingCache.current.get(gKey);
+        if (!generated) {
+          generated = await generateGreetingOnly({
+            job,
+            points: match.greetingPoints,
+            profile,
+            examples: latestExamples,
+            config,
+            apiKey,
+            signal: controller.signal,
+            settings,
+            temporaryRule: tempRule,
+            useExamples: useEx,
+          });
+          greetingCache.current.set(generated.greetingCacheKey, generated);
+        }
+
+        commitVersion(k, match, generated);
       } catch (err) {
         const e = toAppError(err);
         if (e.code !== 'LLM_ABORTED') {
@@ -282,42 +358,85 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
         rerender();
       }
     },
-    [job, profile, settings, applyGeneratedGreeting, rerender],
+    [job, profile, settings, commitVersion, rerender],
   );
 
-  /** 仅重新生成打招呼语（不重新执行 JD 匹配分析；支持临时规则与新配置，且强制刷新本次生成）。 */
+  /**
+   * 仅重新生成打招呼语（不重跑阶段 A）。
+   * 若当前分析已过期（analysisStale），拒绝基于旧事实直接生成，避免新档案混用旧匹配点。
+   */
   const regenerateGreeting = useCallback(
-    async (config: LLMConfig, apiKey: string) => {
+    async (config: LLMConfig, apiKey: string, options: RegenerateGreetingOptions = { force: true }) => {
       if (!job || !profile) return;
       const k = pairKey(job.fingerprint, profile.id);
-      const baseResult = results.current.get(k);
-      if (!baseResult || inflight.current.has(k)) return;
+      const existingPair = pairStates.current.get(k);
+      if (!existingPair || inflight.current.has(k)) return;
+
+      const tempRule = tempRules.current.get(k) ?? '';
+      const useEx = useExamplesMap.current.get(k);
+      const contentHash = computeJobContentHash(job);
+      const eff = resolveEffectiveConfigFromInput({
+        profile,
+        settings,
+        temporaryRule: tempRule,
+        useExamples: useEx,
+      });
+      const expectedAnalysisKey = buildAnalysisCacheKey({
+        jobFingerprint: job.fingerprint,
+        jobContentHash: contentHash,
+        profile,
+        config,
+        preferences: eff.preferences,
+        selectionRules: eff.effectiveSelectionRules,
+      });
+
+      // 守卫：禁止在阶段 A 已过期时使用旧 greetingPoints 单独重写
+      if (existingPair.match.analysisCacheKey !== expectedAnalysisKey) {
+        errors.current.set(k, new AppError('PROFILE_INVALID', '匹配分析已过期，请先更新分析后再重写打招呼语'));
+        rerender();
+        return;
+      }
 
       const controller = new AbortController();
       inflight.current.set(k, { controller, phase: 'greeting' });
       errors.current.delete(k);
       rerender();
 
-      const tempRule = tempRules.current.get(k) ?? '';
-      const useEx = useExamplesMap.current.get(k);
-
       try {
         const latestExamples = await loadGreetingExamples(profile.id);
         setExamples(latestExamples);
-        const generated = await generateGreetingOnly({
-          job,
-          points: baseResult.greetingPoints,
-          profile,
-          examples: latestExamples,
-          config,
-          apiKey,
-          signal: controller.signal,
-          settings,
-          temporaryRule: tempRule,
-          useExamples: useEx,
+        const selected = selectGreetingExamples(job, profile.id, latestExamples, {
+          enabled: eff.preferences.useExamples,
         });
-        greetingCache.current.set(generated.greetingCacheKey, generated);
-        applyGeneratedGreeting(k, baseResult, generated);
+        const gKey = buildGreetingCacheKey({
+          jobFingerprint: job.fingerprint,
+          jobContentHash: contentHash,
+          profileId: profile.id,
+          config,
+          points: existingPair.match.greetingPoints,
+          effectiveRules: eff.effectiveWritingRules,
+          preferences: eff.preferences,
+          examples: selected,
+        });
+
+        let generated = options.force === false ? greetingCache.current.get(gKey) : undefined;
+        if (!generated) {
+          generated = await generateGreetingOnly({
+            job,
+            points: existingPair.match.greetingPoints,
+            profile,
+            examples: latestExamples,
+            config,
+            apiKey,
+            signal: controller.signal,
+            settings,
+            temporaryRule: tempRule,
+            useExamples: useEx,
+          });
+          greetingCache.current.set(generated.greetingCacheKey, generated);
+        }
+
+        commitVersion(k, existingPair.match, generated);
       } catch (err) {
         const e = toAppError(err);
         if (e.code !== 'LLM_ABORTED') {
@@ -328,25 +447,30 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
         rerender();
       }
     },
-    [job, profile, settings, applyGeneratedGreeting, rerender],
+    [job, profile, settings, commitVersion, rerender],
   );
+
+  /** 直接应用阶段 B 已命中的本地缓存（零模型调用） */
+  const applyCachedGreeting = useCallback(() => {
+    if (!key || !activePair || !currentGreetingKey || analysisStale) return;
+    const cached = greetingCache.current.get(currentGreetingKey);
+    if (!cached) return;
+    commitVersion(key, activePair.match, cached);
+    rerender();
+  }, [key, activePair, currentGreetingKey, analysisStale, commitVersion, rerender]);
 
   const cancel = useCallback(() => {
     if (key) inflight.current.get(key)?.controller.abort();
   }, [key]);
 
-  const gState = key ? greetingStates.current.get(key) : undefined;
-  const greeting = gState?.text ?? activeResult?.greeting;
-
   const setGreeting = useCallback(
     (text: string) => {
       if (!key) return;
-      const prev = greetingStates.current.get(key);
-      greetingStates.current.set(key, {
-        text,
-        edited: true,
-        previous: prev?.previous ?? null,
-        pending: prev?.pending ?? null,
+      const pair = pairStates.current.get(key);
+      if (!pair) return;
+      pairStates.current.set(key, {
+        ...pair,
+        current: { ...pair.current, text, edited: true },
       });
       rerender();
     },
@@ -355,47 +479,33 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
 
   const acceptPendingGreeting = useCallback(() => {
     if (!key) return;
-    const prev = greetingStates.current.get(key);
-    const base = results.current.get(key);
-    if (!prev?.pending || !base) return;
-    const pending = prev.pending;
-    greetingStates.current.set(key, {
-      text: pending.greeting,
-      edited: false,
-      previous: prev.text,
+    const pair = pairStates.current.get(key);
+    if (!pair?.pending) return;
+    pairStates.current.set(key, {
+      ...pair,
+      previous: pair.current,
+      current: pair.pending,
       pending: null,
-    });
-    results.current.set(key, {
-      ...base,
-      greeting: pending.greeting,
-      greetingIssues: pending.greetingIssues,
-      greetingIssueDetails: pending.greetingIssueDetails,
-      effectiveRules: pending.effectiveRules,
-      effectivePreferences: pending.effectivePreferences,
-      greetingCacheKey: pending.greetingCacheKey,
-      model: pending.model,
-      createdAt: pending.createdAt,
     });
     rerender();
   }, [key, rerender]);
 
   const discardPendingGreeting = useCallback(() => {
     if (!key) return;
-    const prev = greetingStates.current.get(key);
-    if (!prev?.pending) return;
-    greetingStates.current.set(key, { ...prev, pending: null });
+    const pair = pairStates.current.get(key);
+    if (!pair?.pending) return;
+    pairStates.current.set(key, { ...pair, pending: null });
     rerender();
   }, [key, rerender]);
 
   const restorePreviousGreeting = useCallback(() => {
     if (!key) return;
-    const prev = greetingStates.current.get(key);
-    if (!prev?.previous) return;
-    greetingStates.current.set(key, {
-      text: prev.previous,
-      edited: true,
-      previous: prev.text,
-      pending: prev.pending,
+    const pair = pairStates.current.get(key);
+    if (!pair?.previous) return;
+    pairStates.current.set(key, {
+      ...pair,
+      current: { ...pair.previous, edited: true },
+      previous: pair.current,
     });
     rerender();
   }, [key, rerender]);
@@ -422,11 +532,12 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
     view,
     start,
     regenerateGreeting,
+    applyCachedGreeting,
     cancel,
-    greeting,
-    isEdited: Boolean(gState?.edited),
-    previousGreeting: gState?.previous ?? null,
-    pendingGreeting: gState?.pending ?? null,
+    greeting: activePair?.current.text,
+    isEdited: Boolean(activePair?.current.edited),
+    previousGreeting: activePair?.previous?.text ?? null,
+    pendingGreeting: activePair?.pending ?? null,
     setGreeting,
     acceptPendingGreeting,
     discardPendingGreeting,
@@ -438,5 +549,6 @@ export function useAnalysis(job: Job | null, profile: UserProfile | null, settin
     effectiveConfig,
     analysisStale,
     greetingStale,
+    hasCachedGreeting,
   };
 }

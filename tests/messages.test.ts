@@ -26,10 +26,12 @@ describe('message validation', () => {
     expect(isJobStateChangedMessage({ type: 'JOB_STATE_CHANGED', state: { status: 'loading' } })).toBe(true);
     expect(isJobStateChangedMessage({ type: 'JOB_STATE_CHANGED', state: {}, apiKey: 'x' })).toBe(false);
   });
-  it('state keys dedupe by fingerprint but refresh on late salary', () => {
+  it('state keys dedupe by fingerprint but refresh on late salary or updated JD content', () => {
     const a = jobStateKey({ status: 'ready', job });
     expect(jobStateKey({ status: 'ready', job: { ...job, capturedAt: 'later' } })).toBe(a);
     expect(jobStateKey({ status: 'ready', job: { ...job, salary: '10K' } })).not.toBe(a);
+    expect(jobStateKey({ status: 'ready', job: { ...job, description: '更新后的 JD 内容' } })).not.toBe(a);
+    expect(jobStateKey({ status: 'ready', job: { ...job, title: '更新后的标题' } })).not.toBe(a);
   });
 });
 

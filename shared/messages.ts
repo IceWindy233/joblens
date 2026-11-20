@@ -1,5 +1,6 @@
 import type { Job, JobErrorCode, JobState } from './types';
 import { isRecord } from './json';
+import { cyrb53, squashWhitespace } from './text';
 
 // Side Panel ↔ Content Script 消息契约。LLM 调用不走消息，由扩展页面直接发起。
 
@@ -80,12 +81,16 @@ export function isJobStateChangedMessage(v: unknown): v is JobStateChangedMessag
   return isRecord(v) && v.type === 'JOB_STATE_CHANGED' && isJobState(v.state);
 }
 
-/** 用于去重：状态 + 错误码 + 指纹相同视为同一状态。 */
+/** 用于去重：状态 + 错误码 + 指纹 + 内容摘要相同视为同一状态。 */
 export function jobStateKey(s: JobState): string {
   switch (s.status) {
-    case 'ready':
-      // 薪资/地点可能晚于正文加载，变化时也需刷新预览（不影响指纹）
-      return `ready:${s.job.fingerprint}:${s.job.salary ?? ''}:${s.job.location ?? ''}`;
+    case 'ready': {
+      // 薪资/地点可能晚于正文加载，同一职位 ID 的 JD 标题/正文修改也应触发刷新
+      const contentHash = cyrb53(
+        `${squashWhitespace(s.job.title)}|${squashWhitespace(s.job.description)}`,
+      );
+      return `ready:${s.job.fingerprint}:${contentHash}:${s.job.salary ?? ''}:${s.job.location ?? ''}`;
+    }
     case 'loading':
       return 'loading';
     case 'error':

@@ -114,7 +114,9 @@ export function buildAnalysisMessages(
   const effective = options.effectiveConfig;
   const maxPoints = effective?.preferences.maxPoints ?? 4;
   const allowGap = effective?.preferences.allowGapExplanation ?? false;
-  const rulesText = effective ? effective.combinedRulesText : profile.greetingRules;
+  const rulesText = effective
+    ? effective.effectiveSelectionRules
+    : [profile.selectionRules, profile.greetingRules].filter((s) => s?.trim()).join('\n\n');
 
   const blocks = [
     field('档案摘要', profile.summary, LIMITS.profileSummary),
@@ -124,7 +126,7 @@ export function buildAnalysisMessages(
     field('偏好地点', profile.preferredLocations.join('、'), LIMITS.profileField),
     field('期望薪资', profile.salaryPreference, LIMITS.profileField),
     `选材配置：greetingPoints 上限 ${maxPoints} 条；${allowGap ? '允许在素材中包含基于事实的能力差距说明' : '默认聚焦匹配优势证据，不主动突出短板'}`,
-    field('greetingRules（打招呼语规则）', rulesText, LIMITS.profileField),
+    field('selectionRules（选材与岗位重点规则）', rulesText, LIMITS.profileField),
   ].filter((x): x is string => Boolean(x));
 
   const profileBlock = blocks.join('\n\n');

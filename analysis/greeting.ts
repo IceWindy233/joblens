@@ -10,6 +10,8 @@ export const GREETING_MAX_CHARS = 160;
 export interface CheckGreetingOptions {
   preferences?: Partial<GreetingPreferences>;
   extraNotes?: string;
+  /** 职位标题仅用于识别技术版本标识（如 Web3 / Vue3 / 5G），绝不允许标题中的年限或薪资数字背书候选人经历。 */
+  jobTitle?: string;
 }
 
 const CN_NUM_MAP: Record<string, string> = {
@@ -34,11 +36,27 @@ export function cleanGreeting(raw: string): string {
   return s;
 }
 
+/** 从职位标题中仅提取字母+数字的技术标识（排除 20K/30W 等薪资及独立年限数字）。 */
+function extractTechTokenNumbers(jobTitle: string | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!jobTitle?.trim()) return out;
+  const normalized = jobTitle.normalize('NFKC');
+  const techTokens = normalized.match(/[A-Za-z]+\d+(?:\.\d+)?|\d+(?:\.\d+)?[A-Za-z]+/g) ?? [];
+  for (const token of techTokens) {
+    if (/^\d+(?:\.\d+)?[kKwWmM]$/.test(token)) continue;
+    for (const num of token.match(/\d+(?:\.\d+)?/g) ?? []) {
+      out.add(num);
+    }
+  }
+  return out;
+}
+
 function checkGreetingFacts(
   text: string,
   facts: string,
   prefs: GreetingPreferences,
   extraNotes?: string,
+  jobTitle?: string,
 ): GreetingCheckIssue[] {
   const issues: GreetingCheckIssue[] = [];
   const normalizedText = text.normalize('NFKC');
@@ -49,14 +67,29 @@ function checkGreetingFacts(
     ? normalizedText.replace(/^\s*\d+[.)、]\s*/gm, '')
     : normalizedText;
 
-  // 1. 检查阿拉伯数字是否有匹配点或职位标题依据
+  // 1. 候选人事实数字 vs 职位标题技术标识数字严格分离
   const numbers = /\d+(?:\.\d+)?/g;
-  const supported = new Set(normalizedFacts.match(numbers));
-  const unverified = [...new Set(textForNumbers.match(numbers))].filter((n) => !supported.has(n));
-  if (unverified.length) {
+  const candidateNumbers = new Set(normalizedFacts.match(numbers));
+  const titleTechNumbers = extractTechTokenNumbers(jobTitle);
+
+  // 候选人年限/成果/规模声明中的数字必须严格来自候选人匹配事实（禁止职位标题背书）
+  const claimNumberPattern =
+    /(\d+(?:\.\d+)?)\s*(?:\+|多|余|以上|左右)?\s*(?:年|个月|周|天|%|倍|万|千|亿|个|项|次|人|条|款)/g;
+  const unverifiedClaimNumbers = new Set<string>();
+  for (const m of textForNumbers.matchAll(claimNumberPattern)) {
+    const num = m[1]!;
+    if (!candidateNumbers.has(num)) unverifiedClaimNumbers.add(num);
+  }
+
+  const unverifiedOtherNumbers = [...new Set(textForNumbers.match(numbers))].filter(
+    (n) => !candidateNumbers.has(n) && !titleTechNumbers.has(n) && !unverifiedClaimNumbers.has(n),
+  );
+
+  const allUnverified = [...new Set([...unverifiedClaimNumbers, ...unverifiedOtherNumbers])];
+  if (allUnverified.length) {
     issues.push({
       kind: 'fact',
-      message: `出现无法从匹配点或职位标题核对的数字（${unverified.join('、')}），请删除未经证实的年限或成果`,
+      message: `出现无法从候选匹配事实核对的数字（${allUnverified.join('、')}），请删除未经证实的年限或成果`,
     });
   }
 
@@ -67,7 +100,9 @@ function checkGreetingFacts(
     const cnDigit = m[1]!;
     const arabicDigit = CN_NUM_MAP[cnDigit];
     const hasCn = normalizedFacts.includes(`${cnDigit}年`);
-    const hasArabic = arabicDigit ? normalizedFacts.includes(`${arabicDigit}年`) || supported.has(arabicDigit) : false;
+    const hasArabic = arabicDigit
+      ? normalizedFacts.includes(`${arabicDigit}年`) || candidateNumbers.has(arabicDigit)
+      : false;
     if (!hasCn && !hasArabic) unverifiedCnYears.push(m[0]);
   }
   if (unverifiedCnYears.length) {
@@ -132,13 +167,15 @@ function checkGreetingStyle(text: string, prefs: GreetingPreferences): GreetingC
 function resolveCheckPreferences(opts?: Partial<GreetingPreferences> | CheckGreetingOptions): {
   prefs: GreetingPreferences;
   extraNotes?: string;
+  jobTitle?: string;
 } {
   if (!opts) return { prefs: { ...DEFAULT_GREETING_PREFERENCES, maxChars: GREETING_MAX_CHARS } };
-  if ('preferences' in opts || 'extraNotes' in opts) {
+  if ('preferences' in opts || 'extraNotes' in opts || 'jobTitle' in opts) {
     const o = opts as CheckGreetingOptions;
     return {
       prefs: { ...DEFAULT_GREETING_PREFERENCES, maxChars: GREETING_MAX_CHARS, ...(o.preferences ?? {}) },
       extraNotes: o.extraNotes,
+      jobTitle: o.jobTitle,
     };
   }
   return {
@@ -156,10 +193,10 @@ export function checkGreetingDetailed(
   options?: Partial<GreetingPreferences> | CheckGreetingOptions,
 ): GreetingCheckIssue[] {
   if (!text || !text.trim()) return [{ kind: 'structure', message: '内容为空' }];
-  const { prefs, extraNotes } = resolveCheckPreferences(options);
+  const { prefs, extraNotes, jobTitle } = resolveCheckPreferences(options);
   return [
     ...checkGreetingStyle(text, prefs),
-    ...checkGreetingFacts(text, facts, prefs, extraNotes),
+    ...checkGreetingFacts(text, facts, prefs, extraNotes, jobTitle),
   ];
 }
 

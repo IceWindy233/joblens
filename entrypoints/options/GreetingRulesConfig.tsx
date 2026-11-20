@@ -1,14 +1,32 @@
 import { useState } from 'react';
-import type { EffectiveGreetingConfig, GreetingPreferences, GreetingPresetId } from '../../shared/types';
+import type {
+  EffectiveGreetingConfig,
+  GreetingPreferences,
+  GreetingPresetId,
+  RulePreferenceConflict,
+} from '../../shared/types';
 import {
   GREETING_PRESETS,
   exportGreetingRulesConfig,
+  extractRuleTextDirectives,
   importGreetingRulesConfig,
 } from '../../profile/manager';
+import {
+  IconAlert,
+  IconChevronDown,
+  IconCopy,
+  IconDownload,
+  IconRefresh,
+  IconSliders,
+  IconUpload,
+  ToggleSwitch,
+} from '../../components/Icons';
 
 interface Props {
   title: string;
   description?: string;
+  selectionRules?: string;
+  onSelectionRulesChange?: (rules: string) => void;
   rules: string;
   preferences: GreetingPreferences;
   onRulesChange: (rules: string) => void;
@@ -16,6 +34,7 @@ interface Props {
   defaultRulesText: string;
   defaultPreferences: GreetingPreferences;
   effectivePreview?: EffectiveGreetingConfig;
+  conflicts?: RulePreferenceConflict[];
   textareaAriaLabel?: string;
   placeholder?: string;
 }
@@ -24,14 +43,14 @@ const PRESET_ORDER: readonly GreetingPresetId[] = ['concise', 'technical', 'achi
 
 export function formatPreferencesSummary(prefs: GreetingPreferences): string {
   const parts = [
-    `选材上限 ${prefs.maxPoints} 条`,
-    prefs.singleParagraph ? '单段（禁止换行）' : '允许分段',
-    prefs.allowLists ? '允许分点/列表' : '不使用分点/列表',
+    `最多 ${prefs.maxPoints} 条素材`,
+    prefs.singleParagraph ? '单段' : '允许分段',
+    prefs.allowLists ? '允许列表' : '无列表',
     prefs.maxChars === null
       ? '不限字数'
-      : `字数上限 ${prefs.maxChars} 字${prefs.targetLengthHint ? `（建议 ${prefs.targetLengthHint} 字）` : ''}`,
-    prefs.allowGapExplanation ? '允许主动解释能力差距' : '不主动提及短板',
-    prefs.useExamples ? '启用样例参考' : '关闭样例参考',
+      : `上限 ${prefs.maxChars} 字${prefs.targetLengthHint ? `（建议 ${prefs.targetLengthHint}）` : ''}`,
+    prefs.allowGapExplanation ? '可解释差距' : '聚焦优势',
+    prefs.useExamples ? '参考样例' : '不参考样例',
   ];
   return parts.join(' · ');
 }
@@ -39,6 +58,8 @@ export function formatPreferencesSummary(prefs: GreetingPreferences): string {
 export function GreetingRulesConfig({
   title,
   description,
+  selectionRules,
+  onSelectionRulesChange,
   rules,
   preferences,
   onRulesChange,
@@ -46,6 +67,7 @@ export function GreetingRulesConfig({
   defaultRulesText,
   defaultPreferences,
   effectivePreview,
+  conflicts = [],
   textareaAriaLabel = '打招呼语规则',
   placeholder,
 }: Props) {
@@ -64,7 +86,7 @@ export function GreetingRulesConfig({
     }
     if (id !== 'custom') onRulesChange(preset.rules);
     onPreferencesChange({ ...preset.preferences });
-    setNotice({ kind: 'ok', text: `已填充“${preset.label}”模板，可继续自由编辑文本与参数` });
+    setNotice({ kind: 'ok', text: `已套用“${preset.label}”模板，可继续自由编辑` });
   };
 
   const onCopyRules = async () => {
@@ -80,7 +102,7 @@ export function GreetingRulesConfig({
     const json = exportGreetingRulesConfig(rules, preferences);
     try {
       await navigator.clipboard.writeText(json);
-      setNotice({ kind: 'ok', text: '已将规则与偏好 JSON 复制到剪贴板' });
+      setNotice({ kind: 'ok', text: '已复制配置 JSON 到剪贴板' });
     } catch {
       setImportText(json);
       setShowImport(true);
@@ -115,63 +137,153 @@ export function GreetingRulesConfig({
   };
 
   return (
-    <div className="stack card soft">
+    <div className="panel-card stack">
       <div className="row between wrap">
-        <div>
-          <strong>{title}</strong>
-          {description && <div className="muted">{description}</div>}
+        <div className="stack-sm">
+          <h3>{title}</h3>
+          {description && <span className="muted">{description}</span>}
         </div>
-        <div className="row wrap">
-          <button type="button" className="small" onClick={() => void onCopyRules()}>
+        <div className="row-sm wrap">
+          <button type="button" className="ghost small" onClick={() => void onCopyRules()}>
+            <IconCopy size={13} />
             复制
           </button>
-          <button type="button" className="small" onClick={() => void onExport()}>
-            导出 JSON
+          <button type="button" className="ghost small" onClick={() => void onExport()}>
+            <IconDownload size={13} />
+            导出
           </button>
-          <button type="button" className="small" onClick={() => setShowImport((v) => !v)}>
-            {showImport ? '收起导入' : '导入 JSON'}
+          <button type="button" className="ghost small" onClick={() => setShowImport((v) => !v)}>
+            <IconUpload size={13} />
+            {showImport ? '收起' : '导入'}
           </button>
           <button type="button" className="link small" onClick={onReset}>
-            恢复默认规则
+            <IconRefresh size={12} />
+            恢复默认
           </button>
         </div>
       </div>
 
-      <div className="row wrap">
-        <span className="muted">预设风格模板（仅作可编辑起点）：</span>
-        {PRESET_ORDER.map((id) => {
-          const preset = GREETING_PRESETS[id];
-          const active = preferences.preset === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              className={`chip ${active ? 'active' : ''}`}
-              title={preset.description}
-              onClick={() => applyPreset(id)}
-            >
-              {preset.label}
-            </button>
-          );
-        })}
+      {/* 4 个可编辑预设模板 */}
+      <div className="stack-sm">
+        <span className="muted">选择风格起点（仅作可编辑模板，随时修改）：</span>
+        <div className="grid-4">
+          {PRESET_ORDER.map((id) => {
+            const preset = GREETING_PRESETS[id];
+            const active = preferences.preset === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                className={`preset-card ${active ? 'active' : ''}`}
+                onClick={() => applyPreset(id)}
+              >
+                <span className="preset-title">{preset.label}</span>
+                <span className="preset-desc">{preset.description}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <textarea
-        aria-label={textareaAriaLabel}
-        rows={5}
-        value={rules}
-        placeholder={placeholder}
-        onChange={(e) => onRulesChange(e.target.value)}
-      />
+      {onSelectionRulesChange && (
+        <label className="field">
+          <span>选材与岗位重点规则（阶段 A 生效，决定挑哪几段经历；仅改下方写作风格不会重跑阶段 A）</span>
+          <textarea
+            aria-label="选材与岗位重点规则"
+            rows={2}
+            value={selectionRules ?? ''}
+            placeholder="例：Agent 岗位优先突出 LangGraph 编排与工具校验；工程化岗位优先突出自动化测试平台。"
+            onChange={(e) => onSelectionRulesChange(e.target.value)}
+          />
+        </label>
+      )}
 
-      <details>
-        <summary className="muted">
-          格式、长度与选材校验参数（{formatPreferencesSummary(preferences)}）
+      <label className="field">
+        <span>写作表达与格式规则（阶段 B 生效，控制语气、篇幅、段落与固定结尾）</span>
+        <textarea
+          aria-label={textareaAriaLabel}
+          rows={5}
+          value={rules}
+          placeholder={placeholder}
+          onChange={(e) => onRulesChange(e.target.value)}
+        />
+      </label>
+
+      {conflicts.length > 0 && (
+        <div className="notice warn stack-sm">
+          <div className="row between wrap">
+            <span className="row-sm" style={{ fontWeight: 600 }}>
+              <IconAlert size={14} />
+              检测到文字规则与校验参数存在差异
+            </span>
+            <div className="row-sm">
+              <button
+                type="button"
+                className="small"
+                onClick={() => {
+                  const directives = extractRuleTextDirectives(rules);
+                  onPreferencesChange({
+                    ...preferences,
+                    ...directives,
+                    conflictResolution: 'text',
+                  });
+                  setNotice({ kind: 'ok', text: '已将文字规则中的显式要求同步到参数面板' });
+                }}
+              >
+                以文字同步参数
+              </button>
+              <button
+                type="button"
+                className="small"
+                onClick={() => {
+                  onPreferencesChange({ ...preferences, conflictResolution: 'structured' });
+                  setNotice({ kind: 'ok', text: '已切换为优先采用下方结构化校验参数' });
+                }}
+              >
+                改以参数为准
+              </button>
+            </div>
+          </div>
+          {conflicts.map((c, idx) => (
+            <div key={`${c.layer}-${c.field}-${idx}`} className="small">
+              · <strong>{c.label}</strong>：文字写了“{c.textValue}”，参数设为“{c.structuredValue}” → 当前生效：<strong>{c.resolvedValue}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 校验与生成参数折叠区 */}
+      <details className="drawer">
+        <summary>
+          <span className="row-sm">
+            <IconSliders size={13} />
+            <span>生成与校验参数（{formatPreferencesSummary(preferences)}）</span>
+          </span>
+          <IconChevronDown size={14} className="chevron" />
         </summary>
-        <div className="stack" style={{ marginTop: 8 }}>
+        <div className="panel-card subtle stack" style={{ marginTop: 8 }}>
+          <div className="row between wrap">
+            <span className="small" style={{ fontWeight: 500 }}>当文字规则与参数设置冲突时：</span>
+            <div className="segmented">
+              <button
+                type="button"
+                className={`seg-tab ${(preferences.conflictResolution ?? 'text') === 'text' ? 'active' : ''}`}
+                onClick={() => onPreferencesChange({ ...preferences, conflictResolution: 'text' })}
+              >
+                以文字规则为准
+              </button>
+              <button
+                type="button"
+                className={`seg-tab ${preferences.conflictResolution === 'structured' ? 'active' : ''}`}
+                onClick={() => onPreferencesChange({ ...preferences, conflictResolution: 'structured' })}
+              >
+                以参数为准
+              </button>
+            </div>
+          </div>
           <div className="grid-2">
             <label className="field">
-              <span>匹配素材数量上限（1–8 条）</span>
+              <span>匹配素材上限（1–8 条）</span>
               <select
                 value={preferences.maxPoints}
                 onChange={(e) => updatePref('maxPoints', Number(e.target.value))}
@@ -184,7 +296,7 @@ export function GreetingRulesConfig({
               </select>
             </label>
             <label className="field">
-              <span>最大字数上限（本地风格检查阈值）</span>
+              <span>最大字数上限</span>
               <div className="row">
                 <input
                   type="text"
@@ -201,80 +313,64 @@ export function GreetingRulesConfig({
                     }
                   }}
                 />
-                <label className="row small" style={{ whiteSpace: 'nowrap' }}>
-                  <input
-                    type="checkbox"
-                    checked={preferences.maxChars === null}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        onPreferencesChange({
-                          ...preferences,
-                          preset: 'custom',
-                          maxChars: null,
-                          targetLengthHint: undefined,
-                        });
-                      } else {
-                        updatePref('maxChars', 160);
-                      }
-                    }}
-                  />
-                  不限字数
-                </label>
+                <ToggleSwitch
+                  checked={preferences.maxChars === null}
+                  onChange={(unlimited) => {
+                    if (unlimited) {
+                      onPreferencesChange({
+                        ...preferences,
+                        preset: 'custom',
+                        maxChars: null,
+                        targetLengthHint: undefined,
+                      });
+                    } else {
+                      updatePref('maxChars', 160);
+                    }
+                  }}
+                  label="不限"
+                />
               </div>
             </label>
           </div>
 
-          <div className="row wrap">
-            <label className="row small">
-              <input
-                type="checkbox"
-                checked={!preferences.singleParagraph}
-                onChange={(e) => updatePref('singleParagraph', !e.target.checked)}
-              />
-              允许分段换行
-            </label>
-            <label className="row small">
-              <input
-                type="checkbox"
-                checked={preferences.allowLists}
-                onChange={(e) => {
-                  const allowLists = e.target.checked;
-                  onPreferencesChange({
-                    ...preferences,
-                    preset: 'custom',
-                    allowLists,
-                    ...(allowLists ? { singleParagraph: false } : {}),
-                  });
-                }}
-              />
-              允许使用分点 / 列表
-            </label>
-            <label className="row small">
-              <input
-                type="checkbox"
-                checked={preferences.allowGapExplanation}
-                onChange={(e) => updatePref('allowGapExplanation', e.target.checked)}
-              />
-              允许主动解释能力差距
-            </label>
-            <label className="row small">
-              <input
-                type="checkbox"
-                checked={preferences.useExamples}
-                onChange={(e) => updatePref('useExamples', e.target.checked)}
-              />
-              参考历史打招呼语样例
-            </label>
+          <div className="grid-2">
+            <ToggleSwitch
+              checked={!preferences.singleParagraph}
+              onChange={(allow) => updatePref('singleParagraph', !allow)}
+              label="允许分段换行"
+            />
+            <ToggleSwitch
+              checked={preferences.allowLists}
+              onChange={(allowLists) => {
+                onPreferencesChange({
+                  ...preferences,
+                  preset: 'custom',
+                  allowLists,
+                  ...(allowLists ? { singleParagraph: false } : {}),
+                });
+              }}
+              label="允许分点 / 列表"
+            />
+            <ToggleSwitch
+              checked={preferences.allowGapExplanation}
+              onChange={(v) => updatePref('allowGapExplanation', v)}
+              label="允许主动解释能力差距"
+            />
+            <ToggleSwitch
+              checked={preferences.useExamples}
+              onChange={(v) => updatePref('useExamples', v)}
+              label="参考历史打招呼语样例"
+            />
           </div>
-          <div className="muted">
-            提示：规则文本中若明确写了“分段”“使用列表”“不超过 250 字”“提及短板”等要求，也会在生效时自动覆盖低优先级限制。
-          </div>
+          <span className="muted">
+            规则文本中的显式要求（如“分段”“分点列表”“不超过 250 字”“提及短板”）会自动覆盖低优先级限制。
+          </span>
         </div>
       </details>
 
       {showImport && (
-        <div className="card stack">
-          <span className="small">粘贴规则配置 JSON 后点击导入（可直接覆盖当前编辑区内容）：</span>
+        <div className="panel-card subtle stack-sm">
+          <span className="small" style={{ fontWeight: 500 }}>粘贴规则配置 JSON：</span>
           <textarea
             rows={4}
             value={importText}
@@ -293,17 +389,38 @@ export function GreetingRulesConfig({
       )}
 
       {effectivePreview && (
-        <details>
-          <summary className="muted">
-            查看当前实际生效的规则（优先级：内置事实约束 &gt; 单次补充 &gt; 档案规则 &gt; 全局规则）
+        <details className="drawer">
+          <summary>
+            <span className="row-sm">
+              <span>查看实际生效规则（全局 + 档案合并后）</span>
+            </span>
+            <IconChevronDown size={14} className="chevron" />
           </summary>
-          <div className="stack" style={{ marginTop: 8 }}>
+          <div className="panel-card subtle stack-sm" style={{ marginTop: 8 }}>
+            <div className="priority-strip">
+              <span className="badge ok">内置事实约束</span>
+              <span className="priority-arrow">&gt;</span>
+              <span className="badge info">单次补充</span>
+              <span className="priority-arrow">&gt;</span>
+              <span className="badge primary">档案规则</span>
+              <span className="priority-arrow">&gt;</span>
+              <span className="badge">全局规则</span>
+            </div>
             <div className="small">
               <strong>生效参数：</strong>
               {formatPreferencesSummary(effectivePreview.preferences)}
             </div>
-            <div className="pre jd-preview">
-              {effectivePreview.combinedRulesText || '（未设置全局或档案规则，将按默认自然风格与事实约束生成）'}
+            <div className="stack-sm">
+              <span className="muted">阶段 A · 生效选材规则</span>
+              <div className="pre jd-preview">
+                {effectivePreview.effectiveSelectionRules || '（未设置特定选材规则，由模型按 JD 核心职责自动挑选）'}
+              </div>
+            </div>
+            <div className="stack-sm">
+              <span className="muted">阶段 B · 生效写作规则</span>
+              <div className="pre jd-preview">
+                {effectivePreview.effectiveWritingRules || '（未设置自定义写作规则，将按默认自然风格与事实约束生成）'}
+              </div>
             </div>
           </div>
         </details>

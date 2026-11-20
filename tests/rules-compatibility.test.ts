@@ -4,6 +4,7 @@ import {
   analyzeJobMatch,
   buildAnalysisCacheKey,
   buildGreetingCacheKey,
+  computeJobContentHash,
   generateGreetingOnly,
 } from '../analysis/analyze';
 import { checkGreetingDetailed } from '../analysis/greeting';
@@ -14,6 +15,7 @@ import {
   DEFAULT_GREETING_PREFERENCES,
   GREETING_PRESETS,
   createProfile,
+  diffGreetingPreferences,
   exportGreetingRulesConfig,
   importGreetingRulesConfig,
   migrateGreetingExample,
@@ -506,5 +508,153 @@ describe('structured facts, migration, example selection, and two-stage caching'
     expect(requests).toHaveLength(2); // 1 次阶段 A + 1 次独立阶段 B
     expect(regen.effectiveRules).toContain('固定结尾：期待交流！');
     expect(regen.greetingCacheKey).not.toBe(gKey1);
+  });
+
+  it('prevents default structured prefs from overriding free-text rules and surfaces explicit conflicts', () => {
+    const settingsWithDefaults: AppSettings = {
+      activeProfileId: null,
+      llm: llmConfig,
+      globalGreetingRules: '允许分段表达。\n不限字数。',
+      globalGreetingPreferences: { singleParagraph: true, maxChars: 160 },
+    };
+
+    // 默认冲突策略 'text'：即使全局保存了默认结构化值，文字规则依然生效，同时暴露 conflicts 列表
+    const textWins = resolveGreetingConfig({ settings: settingsWithDefaults });
+    expect(textWins.preferences.singleParagraph).toBe(false);
+    expect(textWins.preferences.maxChars).toBeNull();
+    expect(textWins.conflicts).toHaveLength(2);
+    expect(textWins.conflicts[0]).toMatchObject({
+      layer: 'global',
+      field: 'singleParagraph',
+      textValue: '允许分段',
+      structuredValue: '单段（禁止换行）',
+      resolvedValue: '允许分段',
+    });
+
+    // 用户显式选择 'structured' 策略时，按结构化参数为准
+    const structWins = resolveGreetingConfig({
+      settings: {
+        ...settingsWithDefaults,
+        globalGreetingPreferences: {
+          singleParagraph: true,
+          maxChars: 160,
+          conflictResolution: 'structured',
+        },
+      },
+    });
+    expect(structWins.preferences.singleParagraph).toBe(true);
+    expect(structWins.preferences.maxChars).toBe(160);
+
+    // diffGreetingPreferences 不会持久化未改动的默认值
+    expect(diffGreetingPreferences({ ...DEFAULT_GREETING_PREFERENCES })).toEqual({});
+  });
+
+  it('invalidates Stage A cache on selectionRules or same-id JD content changes, but preserves Stage A on pure writing edits', () => {
+    const baseProfile: UserProfile = {
+      ...REGRESSION_PROFILES.compositeAi,
+      selectionRules: '优先突出后端开发经验',
+      greetingRules: '固定结尾：“期待交流！”',
+    };
+    const changedSelection: UserProfile = {
+      ...baseProfile,
+      selectionRules: '优先突出 Agent 工具编排和评测实践',
+    };
+    const changedMixedSelection: UserProfile = {
+      ...baseProfile,
+      selectionRules: undefined,
+      greetingRules: '优先突出 Agent 工具编排和评测实践\n固定结尾：“期待交流！”',
+    };
+    const changedPureWriting: UserProfile = {
+      ...baseProfile,
+      greetingRules: '固定结尾：“祝工作顺利！”\n不超过 120 字',
+    };
+
+    const effBase = resolveGreetingConfig({ profile: baseProfile });
+    const effSel = resolveGreetingConfig({ profile: changedSelection });
+    const effMixed = resolveGreetingConfig({ profile: changedMixedSelection });
+    const effWrite = resolveGreetingConfig({ profile: changedPureWriting });
+
+    const jobHash = computeJobContentHash(baseJob);
+    const keyBase = buildAnalysisCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profile: baseProfile,
+      config: llmConfig,
+      preferences: effBase.preferences,
+      selectionRules: effBase.effectiveSelectionRules,
+    });
+    const keyPureWrite = buildAnalysisCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profile: changedPureWriting,
+      config: llmConfig,
+      preferences: effWrite.preferences,
+      selectionRules: effWrite.effectiveSelectionRules,
+    });
+    const keyChangedSel = buildAnalysisCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profile: changedSelection,
+      config: llmConfig,
+      preferences: effSel.preferences,
+      selectionRules: effSel.effectiveSelectionRules,
+    });
+    const keyChangedMixed = buildAnalysisCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profile: changedMixedSelection,
+      config: llmConfig,
+      preferences: effMixed.preferences,
+      selectionRules: effMixed.effectiveSelectionRules,
+    });
+
+    // 仅改固定结尾与字数：阶段 A 缓存保持命中
+    expect(keyPureWrite).toBe(keyBase);
+    // 改动选材规则（无论在 selectionRules 还是 greetingRules 中）：阶段 A 缓存立即失效
+    expect(keyChangedSel).not.toBe(keyBase);
+    expect(keyChangedMixed).not.toBe(keyBase);
+
+    // 同一招聘 ID 但 JD 正文更新时，阶段 A 与阶段 B 缓存均立即失效
+    const updatedJob: Job = {
+      ...baseJob,
+      description: `${baseJob.description}\n新增硬性要求：熟悉 Rust 系统开发。`,
+    };
+    const updatedHash = computeJobContentHash(updatedJob);
+    const keyUpdatedJob = buildAnalysisCacheKey({
+      jobFingerprint: updatedJob.fingerprint,
+      jobContentHash: updatedHash,
+      profile: baseProfile,
+      config: llmConfig,
+      preferences: effBase.preferences,
+      selectionRules: effBase.effectiveSelectionRules,
+    });
+    expect(updatedJob.fingerprint).toBe(baseJob.fingerprint);
+    expect(keyUpdatedJob).not.toBe(keyBase);
+  });
+
+  it('prevents JD title numbers like "5年经验" from backing unverified candidate claims while allowing tech tokens like Web3/5G', () => {
+    // 职位标题含 “5 年经验” 与 “20-30K”，但候选人匹配事实里没有 5
+    const issues = checkGreetingDetailed(
+      '您好，我具备 5 年前端开发经验，期待沟通！',
+      '负责 React 组件库搭建',
+      { jobTitle: '资深前端开发（5年经验 / 20-30K）' },
+    );
+    expect(issues.some((i) => i.kind === 'fact' && i.message.includes('5'))).toBe(true);
+
+    // 职位标题中的技术标识词（Web3 / 5G）可正常在打招呼语中提及，但不能用来冒充 “3 年经验”
+    expect(
+      checkGreetingDetailed(
+        '您好，我对贵司 Web3 研发岗位很感兴趣，曾负责 React 钱包界面开发。',
+        '负责 React 钱包界面开发',
+        { jobTitle: 'Web3 前端工程师' },
+      ),
+    ).toEqual([]);
+
+    const falseClaim = checkGreetingDetailed(
+      '您好，我有 3 年 Web3 开发经验。',
+      '负责 React 钱包界面开发',
+      { jobTitle: 'Web3 前端工程师' },
+    );
+    expect(falseClaim.some((i) => i.kind === 'fact' && i.message.includes('3'))).toBe(true);
   });
 });
