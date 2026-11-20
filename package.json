@@ -2,7 +2,7 @@
   "name": "joblens",
   "description": "JobLens（职镜）：基于当前招聘职位与所选简历的 AI 求职分析助手",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
