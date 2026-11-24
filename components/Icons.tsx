@@ -63,6 +63,17 @@ export function IconSparkles({ size, className }: IconProps) {
   );
 }
 
+/** JobLens 品牌图形：带对勾的放大镜，与应用图标（docs/icon.png）同形 */
+export function IconLens({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <circle cx="9.17" cy="9.17" r="5.96" strokeWidth={2.4} />
+      <path d="M13.8 13.8 20.7 20.7" strokeWidth={2.5} />
+      <path d="m6.03 9.49 2.31 2.19 4.03-4.09" strokeWidth={1.75} />
+    </Svg>
+  );
+}
+
 export function IconCopy({ size, className }: IconProps) {
   return (
     <Svg size={size} className={className}>

@@ -18,7 +18,7 @@ import org.json.JSONObject
  * 悬浮按钮：浅色/深色底的圆片 + 细环形“表盘”。
  * - 出分后环形按分数填充，中间显示分数；
  * - 分析中环形上有一段旋转的弧（系统关闭动画时静止）；
- * - 其他状态显示品牌星标或简短文字，环形颜色表示状态。
+ * - 其他状态显示品牌图形（带对勾的放大镜）或简短文字，环形颜色表示状态。
  * 契约见 mobile/panel.tsx 的 BubbleState。
  */
 class BubbleView(context: Context) : View(context) {
@@ -46,7 +46,12 @@ class BubbleView(context: Context) : View(context) {
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         fontFeatureSettings = "tnum"
     }
-    private val starPath = Path()
+    private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val checkPath = Path()
 
     private var spinAngle = 0f
     private val spinner = ValueAnimator.ofFloat(0f, 360f).apply {
@@ -132,7 +137,7 @@ class BubbleView(context: Context) : View(context) {
             "score" -> drawText(canvas, (score ?: 0).toString(), dp(15f), cx, cy)
             "truncated" -> drawText(canvas, "JD", dp(13f), cx, cy)
             "error" -> drawText(canvas, "!", dp(18f), cx, cy)
-            else -> drawStar(canvas, cx, cy, radius * 0.42f, tone)
+            else -> drawLens(canvas, cx, cy, radius * 0.56f, tone)
         }
     }
 
@@ -142,17 +147,27 @@ class BubbleView(context: Context) : View(context) {
         canvas.drawText(text, cx, cy - (m.ascent + m.descent) / 2, textPaint)
     }
 
-    /** 品牌星标（与设置页图标同形的四角星） */
-    private fun drawStar(canvas: Canvas, cx: Float, cy: Float, r: Float, color: Int) {
-        val k = r * 0.22f
-        starPath.reset()
-        starPath.moveTo(cx, cy - r)
-        starPath.quadTo(cx + k, cy - k, cx + r, cy)
-        starPath.quadTo(cx + k, cy + k, cx, cy + r)
-        starPath.quadTo(cx - k, cy + k, cx - r, cy)
-        starPath.quadTo(cx - k, cy - k, cx, cy - r)
-        starPath.close()
-        fillPaint.color = color
-        canvas.drawPath(starPath, fillPaint)
+    /**
+     * 品牌图形：带对勾的放大镜，与应用图标及设置页 IconLens 同形。
+     * 坐标取自 IconLens 的 24×24 viewBox（图形中心约在 12,12），按 [half] 缩放。
+     */
+    private fun drawLens(canvas: Canvas, cx: Float, cy: Float, half: Float, color: Int) {
+        val s = half / 10f
+        fun x(u: Float) = cx + (u - 12f) * s
+        fun y(u: Float) = cy + (u - 12f) * s
+        glyphPaint.color = color
+
+        glyphPaint.strokeWidth = 2.4f * s
+        canvas.drawCircle(x(9.17f), y(9.17f), 5.96f * s, glyphPaint)
+
+        glyphPaint.strokeWidth = 2.5f * s
+        canvas.drawLine(x(13.8f), y(13.8f), x(20.7f), y(20.7f), glyphPaint)
+
+        glyphPaint.strokeWidth = 1.75f * s
+        checkPath.reset()
+        checkPath.moveTo(x(6.03f), y(9.49f))
+        checkPath.lineTo(x(8.34f), y(11.68f))
+        checkPath.lineTo(x(12.37f), y(7.59f))
+        canvas.drawPath(checkPath, glyphPaint)
     }
 }

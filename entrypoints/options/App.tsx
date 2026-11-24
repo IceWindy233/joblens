@@ -15,9 +15,9 @@ import {
   IconCheck,
   IconCpu,
   IconEdit,
+  IconLens,
   IconPlus,
   IconShield,
-  IconSparkles,
   IconTrash,
   IconWand,
 } from '../../components/Icons';
@@ -137,7 +137,7 @@ export default function App() {
       <aside className="opt-sidebar">
         <div className="brand-box">
           <div className="brand-logo">
-            <IconSparkles size={17} />
+            <IconLens size={18} />
           </div>
           <div className="stack-sm" style={{ gap: 0 }}>
             <strong style={{ fontSize: 15 }}>JobLens · 职镜</strong>
