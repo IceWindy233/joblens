@@ -2,6 +2,18 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// 版本号只维护一处：取根目录 package.json 的 version（与扩展一致）。
+// versionCode = 主版本 × 10000 + 次版本 × 100 + 修订号，例如 0.3.0 → 300。
+val appVersion: String = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"")
+    .find(rootProject.file("../package.json").readText())
+    ?.groupValues?.get(1)
+    ?: error("package.json 中没有 version")
+val appVersionCode: Int = appVersion.substringBefore('-').split('.').map(String::toInt)
+    .let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
+
+// 正式签名：由 Release 工作流（或本地）通过环境变量提供；未提供时 release 构建产出未签名 APK
+val releaseKeystore: String? = System.getenv("ANDROID_KEYSTORE_PATH")
+
 android {
     namespace = "com.joblens.android"
     compileSdk = 37
@@ -11,14 +23,25 @@ android {
         // 保留 OCR 兜底所需的 AccessibilityService.takeScreenshot（API 30）
         minSdk = 30
         targetSdk = 36
-        // 与根目录 package.json 的 version 保持一致；versionCode 随每次发布递增
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = appVersionCode
+        versionName = appVersion
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

@@ -8,3 +8,7 @@ dist
 
 # 真实页面诊断快照：含浏览过的职位与公司原文，仅本地保留，不提交
 tests/fixtures/real/
+
+# Android 签名密钥库：只存放在本地与仓库 Secrets，绝不提交
+*.keystore
+*.jks

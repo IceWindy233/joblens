@@ -147,15 +147,27 @@ tests/                  # 单元测试、DOM 与节点树样本
 
 ### 发布新版本
 
-1. 修改 `package.json` 的 `version`（扩展 manifest 版本取自这里），提交。
+1. 修改 `package.json` 的 `version`，提交。扩展 manifest 与 Android 的 `versionName` 都取自这里；Android `versionCode` 按 `主×10000 + 次×100 + 修订` 自动计算（0.3.0 → 300）。
 2. 打同名标签并推送：
 
    ```bash
-   git tag v0.1.0
+   git tag v0.3.0
    git push origin main --tags
    ```
 
-3. GitHub Actions 的 **Release** 工作流会校验版本号、运行类型检查和测试、打包，并创建附带 `joblens-<version>-chrome.zip` 的 Release（`v0.x` 标记为预发布）。
+3. GitHub Actions 的 **Release** 工作流会校验版本号、运行类型检查和测试，打包扩展并构建正式签名的 Android APK，创建附带 `joblens-<version>-chrome.zip` 与 `joblens-<version>-android.apk` 的 Release（`v0.x` 标记为预发布）。
+
+#### Android 签名密钥（首次发布前配置一次）
+
+```bash
+keytool -genkeypair -keystore joblens-release.keystore -alias joblens \
+  -keyalg RSA -keysize 2048 -validity 10000
+base64 -i joblens-release.keystore | pbcopy   # 复制到剪贴板
+```
+
+在仓库 Settings → Secrets and variables → Actions 中添加 `ANDROID_KEYSTORE_BASE64`（上面复制的内容）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。缺少任何一项时 Release 工作流会直接失败，不会发布未签名的 APK。密钥库文件请离线妥善备份：丢失后，已安装的用户无法覆盖升级到新签名的版本。
+
+本地构建正式包时设置同名环境变量，并用 `ANDROID_KEYSTORE_PATH` 指向密钥库文件，再运行 `cd android && ./gradlew assembleRelease`；不设置时产出未签名的 release 包。
 
 每次推送到 `main` 或提交 PR，**CI** 工作流都会运行类型检查、测试和打包，构建产物可在该次运行的 Artifacts 中下载。
 
