@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { GreetingExample } from '../../shared/types';
 import { parseListInput } from '../../profile/manager';
+import { getPlatform } from '../../platform';
 import {
   loadGreetingExamples,
   onStorageChanged,
@@ -87,7 +88,7 @@ export function GreetingExamples({ profileId }: { profileId: string }) {
       {!loadError && examples === null && <div className="muted">正在读取样例…</div>}
       {examples?.length === 0 && (
         <div className="panel-card subtle muted">
-          暂无历史样例。在侧边栏编辑或确认打招呼语后，点击“存为样例”即可收录到这里。
+          暂无历史样例。在{getPlatform().terms.workspace}编辑或确认打招呼语后，点击“存为样例”即可收录到这里。
         </div>
       )}
       {examples?.map((example) => (

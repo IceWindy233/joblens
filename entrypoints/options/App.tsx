@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GreetingPreferences } from '../../shared/types';
 import { useAppData } from '../../components/useAppData';
+import { getPlatform } from '../../platform';
 import {
   DEFAULT_GLOBAL_GREETING_RULES,
   DEFAULT_GREETING_PREFERENCES,
@@ -23,8 +24,9 @@ import {
 import { GreetingRulesConfig } from './GreetingRulesConfig';
 import { ModelSettings } from './ModelSettings';
 import { ProfileEditor } from './ProfileEditor';
+import { SetupChecksPage, pendingSetupCount, useSetupChecks } from './SetupChecks';
 
-type NavTab = 'profiles' | 'style' | 'model' | 'privacy';
+type NavTab = 'profiles' | 'style' | 'model' | 'setup' | 'privacy';
 type Editing = { mode: 'new' } | { mode: 'edit'; id: string } | null;
 
 export default function App() {
@@ -39,12 +41,17 @@ export default function App() {
   const [globalStatus, setGlobalStatus] = useState<string | null>(null);
 
   const modelReady = Boolean(data.settings.llm && data.hasPermission && data.apiKey);
+  const profileReady = data.profiles.some((p) => p.id === data.settings.activeProfileId);
+  const setup = getPlatform().setup;
+  const setupChecks = useSetupChecks(setup);
+  const setupReady = pendingSetupCount(setupChecks) === 0 && modelReady && profileReady;
 
   useEffect(() => {
     if (!data.loaded) return;
     if (!initializedNav.current) {
       initializedNav.current = true;
-      if (!modelReady) setNav('model');
+      if (setup?.consumeFirstRun()) setNav('setup');
+      else if (!modelReady) setNav('model');
     }
     setGlobalSelectionRules(data.settings.globalSelectionRules ?? '');
     setGlobalRules(data.settings.globalGreetingRules ?? DEFAULT_GLOBAL_GREETING_RULES);
@@ -74,6 +81,12 @@ export default function App() {
       }),
     [globalSelectionRules, globalRules, globalPrefs, globalPrefsCustomized],
   );
+
+  // 窄屏导航横向滚动：切换（包括首次启动自动切换）后把当前分区滚到可见位置
+  const navRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    navRef.current?.querySelector('.opt-nav-item.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [nav, data.loaded]);
 
   if (!data.loaded) {
     return (
@@ -115,6 +128,7 @@ export default function App() {
   const switchNav = (next: NavTab) => {
     setNav(next);
     if (next !== 'profiles') setEditing(null);
+    window.scrollTo({ top: 0 });
   };
 
   return (
@@ -131,7 +145,7 @@ export default function App() {
           </div>
         </div>
 
-        <nav className="opt-nav" aria-label="设置分区">
+        <nav ref={navRef} className="opt-nav" aria-label="设置分区">
           <button
             type="button"
             className={`opt-nav-item ${nav === 'profiles' ? 'active' : ''}`}
@@ -170,6 +184,23 @@ export default function App() {
             />
           </button>
 
+          {setup && (
+            <button
+              type="button"
+              className={`opt-nav-item ${nav === 'setup' ? 'active' : ''}`}
+              onClick={() => switchNav('setup')}
+            >
+              <span className="row-sm">
+                <IconCheck size={15} />
+                权限与运行
+              </span>
+              <span
+                className={`status-dot ${setupReady ? 'ok' : 'warn'}`}
+                title={setupReady ? '已就绪' : '有待处理项'}
+              />
+            </button>
+          )}
+
           <button
             type="button"
             className={`opt-nav-item ${nav === 'privacy' ? 'active' : ''}`}
@@ -184,7 +215,7 @@ export default function App() {
 
         <div className="panel-card subtle stack-sm">
           <span className="muted" style={{ lineHeight: 1.5 }}>
-            所有数据均保存在本机浏览器。只有你主动点击按钮时，才会向你配置的模型发送文字。
+            所有数据均保存在{getPlatform().terms.dataHome}。只有你主动点击按钮时，才会向你配置的模型发送文字。
           </span>
         </div>
       </aside>
@@ -197,7 +228,7 @@ export default function App() {
             <span className="small">
               快速开始：
               <strong>1. 连接模型</strong> {modelReady ? '✓' : '（进行中）'} →{' '}
-              <strong>2. 新建简历档案</strong> {data.profiles.length > 0 ? '✓' : '（待完成）'} → 打开 BOSS 职位页使用侧边栏
+              <strong>2. 新建简历档案</strong> {data.profiles.length > 0 ? '✓' : '（待完成）'} → {getPlatform().terms.getStarted}
             </span>
             {modelReady && data.profiles.length === 0 && nav !== 'profiles' && (
               <button type="button" className="primary small" onClick={() => switchNav('profiles')}>
@@ -375,13 +406,24 @@ export default function App() {
           </div>
         )}
 
+        {/* 权限与运行（仅 Android） */}
+        {nav === 'setup' && setup && (
+          <SetupChecksPage
+            setup={setup}
+            checks={setupChecks}
+            configReady={{ model: modelReady, profile: profileReady }}
+            onOpenModel={() => switchNav('model')}
+            onOpenProfiles={() => switchNav('profiles')}
+          />
+        )}
+
         {/* 4. 数据与隐私 */}
         {nav === 'privacy' && (
           <div className="stack-lg">
             <div className="opt-page-header">
               <div className="stack-sm">
                 <h1>数据与隐私</h1>
-                <span className="muted">清楚了解哪些规则不可覆盖、本地数据存放在哪里以及何时离开浏览器。</span>
+                <span className="muted">清楚了解哪些规则不可覆盖、本地数据存放在哪里以及何时离开{getPlatform().terms.dataHome}。</span>
               </div>
             </div>
 
@@ -398,7 +440,7 @@ export default function App() {
                   <strong>两阶段缓存与人工核对：</strong>匹配分析与打招呼语分别缓存；本地检查仅覆盖部分数字与格式问题，不能替代人工全面事实核验。
                 </div>
                 <div>
-                  <strong>隐私边界：</strong>分析岗位时仅发送当前职位、档案摘要/结构化事实与选中样例，绝不发送原始简历全文；扩展不读取招聘平台 Cookie 或密码。
+                  <strong>隐私边界：</strong>分析岗位时仅发送当前职位、档案摘要/结构化事实与选中样例，绝不发送原始简历全文；JobLens 不读取招聘平台的 Cookie、账号或密码。
                 </div>
               </div>
             </div>

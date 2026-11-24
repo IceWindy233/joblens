@@ -67,7 +67,7 @@ function roleTagBoost(jobTextLower: string, roleTags: string[] | undefined): num
  * 综合职位标题、JD 能力领域语义重合度、适用岗位标签和“优先参考”标记选择样例：
  * - 标题与能力领域权重高于普通文本重叠，减少标题相近但职责差异很大时的误选；
  * - 严格按 profileId 隔离；
- * - 用户标记为 preferred 的样例在相关前提下优先排序；
+ * - 同一职位保存的样例排在首位，其他相关样例优先考虑用户标记；
  * - 同分时优先最近保存的样例。
  */
 export function selectGreetingExamples(
@@ -117,6 +117,7 @@ export function selectGreetingExamples(
   return matches
     .sort(
       (a, b) =>
+        Number(b.example.jobFingerprint === job.fingerprint) - Number(a.example.jobFingerprint === job.fingerprint) ||
         Number(b.preferred) - Number(a.preferred) ||
         b.score - a.score ||
         b.example.createdAt.localeCompare(a.example.createdAt),

@@ -9,7 +9,12 @@ import {
 } from '../analysis/analyze';
 import { checkGreetingDetailed } from '../analysis/greeting';
 import { selectGreetingExamples } from '../analysis/greeting-examples';
-import { GREETING_SYSTEM_PROMPT, buildAnalysisMessages, buildGreetingMessages } from '../analysis/prompts';
+import {
+  GREETING_SYSTEM_PROMPT,
+  buildAnalysisMessages,
+  buildGreetingMessages,
+  buildGreetingRevision,
+} from '../analysis/prompts';
 import { validateAnalysisPayload } from '../analysis/schema';
 import {
   DEFAULT_GREETING_PREFERENCES,
@@ -63,12 +68,11 @@ describe('core system prompt decoupling & rule configurability', () => {
     expect(effective.preferences).toEqual(DEFAULT_GREETING_PREFERENCES);
 
     const payload = {
-      matchScore: 84,
-      recommendation: 'recommended',
-      summary: '安全与 AI 安全高度匹配',
-      strengths: [{ requirement: '提示词注入防护', evidence: '搭建内部大模型提示词注入防护护栏', category: 'core', status: 'matched' }],
-      gaps: [{ requirement: '驻场出差', evidence: '简历未体现', category: 'general', status: 'not_shown' }],
-      greetingPoints: ['搭建内部大模型应用提示词注入防护护栏与输出审计规范'],
+      requirements: [
+        { requirement: '提示词注入防护', evidence: '搭建内部大模型应用提示词注入防护护栏与输出审计规范', category: 'core', status: 'matched', dimension: 'capability' },
+        { requirement: '接受驻场出差', evidence: '简历未体现', category: 'hard', status: 'not_shown', dimension: 'preference' },
+      ],
+      greetingSelections: [1],
     };
     const greeting = '您好，我在安全工程部负责过大模型提示词注入防护护栏与输出审计建设，希望能沟通该岗位。';
     const { requests, fetchImpl } = mockReplies(JSON.stringify(payload), greeting);
@@ -199,20 +203,17 @@ describe('core system prompt decoupling & rule configurability', () => {
     ).toEqual([]);
   });
 
-  it('allows configurable greetingPoints limit in schema validation', () => {
+  it('allows a configurable selection limit in schema validation', () => {
     const payloadWith6 = {
-      matchScore: 85,
-      recommendation: 'recommended',
-      summary: '匹配度较高',
-      strengths: [{ requirement: 'Agent', evidence: 'LangGraph' }],
-      gaps: [{ requirement: '无', evidence: '无明显短板' }],
-      greetingPoints: ['点1', '点2', '点3', '点4', '点5', '点6'],
+      requirements: Array.from({ length: 6 }, (_, i) => ({
+        requirement: `要求 ${i + 1}`, evidence: `事实 ${i + 1}`, category: 'core', status: 'matched', dimension: 'capability',
+      })),
+      greetingSelections: [1, 2, 3, 4, 5, 6],
     };
-    // 默认上限仍为 4
-    expect(validateAnalysisPayload(payloadWith6).ok).toBe(false);
-    // 配置上限为 6 时可通过
+    const defaults = validateAnalysisPayload(payloadWith6);
+    expect(defaults.ok && defaults.value.greetingSelections).toEqual([1, 2]);
     const allowed = validateAnalysisPayload(payloadWith6, { maxGreetingPoints: 6 });
-    expect(allowed.ok && allowed.value.greetingPoints).toHaveLength(6);
+    expect(allowed.ok && allowed.value.greetingSelections).toHaveLength(6);
   });
 
   it('handles gap explanation directive in Stage A & Stage B prompts', () => {
@@ -265,8 +266,6 @@ describe('structured facts, migration, example selection, and two-stage caching'
     const draft = validateProfileDraft({
       name: 'Agent 方向',
       summary: '客观事实摘要',
-      targetRoles: ['AI Agent 开发'],
-      preferredLocations: ['上海'],
       facts: [
         {
           fact: '搭建 LangGraph 工具编排',
@@ -289,8 +288,6 @@ describe('structured facts, migration, example selection, and two-stage caching'
       summary: draft!.summary,
       facts: draft!.facts,
       extraNotes: '',
-      targetRoles: draft!.targetRoles,
-      preferredLocations: draft!.preferredLocations,
       greetingRules: '我的规则',
     });
     const msgs = buildAnalysisMessages(baseJob, profile);
@@ -307,8 +304,6 @@ describe('structured facts, migration, example selection, and two-stage caching'
       resumeText: '旧简历',
       summary: 'React 2年',
       extraNotes: '',
-      targetRoles: ['前端'],
-      preferredLocations: [],
       greetingRules: '用户手写的老规则：绝不覆盖我！',
       version: 4,
       createdAt: '2026-01-01T00:00:00Z',
@@ -478,12 +473,10 @@ describe('structured facts, migration, example selection, and two-stage caching'
 
     // 仅调用阶段 B 重新生成时，不会额外发出阶段 A 请求
     const payload = {
-      matchScore: 88,
-      recommendation: 'recommended',
-      summary: '匹配度高',
-      strengths: [{ requirement: 'Agent 编排', evidence: 'LangGraph 与 MCP 编排经验' }],
-      gaps: [{ requirement: '无', evidence: '无' }],
-      greetingPoints: ['主导设计基于 LangGraph 与 MCP 的多工具 Agent 编排状态机'],
+      requirements: [
+        { requirement: 'Agent 编排', evidence: '主导设计基于 LangGraph 与 MCP 的多工具 Agent 编排状态机', category: 'core', status: 'matched', dimension: 'capability' },
+      ],
+      greetingSelections: [1],
     };
     const { requests, fetchImpl } = mockReplies(
       JSON.stringify(payload),
@@ -656,5 +649,74 @@ describe('structured facts, migration, example selection, and two-stage caching'
       { jobTitle: 'Web3 前端工程师' },
     );
     expect(falseClaim.some((i) => i.kind === 'fact' && i.message.includes('3'))).toBe(true);
+  });
+
+  it('uses the default experience-first style and keeps writing preferences configurable', () => {
+    expect(GREETING_SYSTEM_PROMPT).toContain('舍弃重复或次要的候选事实');
+    expect(GREETING_SYSTEM_PROMPT).toContain('先找与 <greeting_context> 中岗位重点最相关的事实');
+    expect(GREETING_SYSTEM_PROMPT).toContain('当前候选人的信息只能来自本次 <points>');
+
+    // 2. 用户可编辑规则维度：项目名称、数字、技术细节、直接匹配判断句、篇幅和固定结尾
+    expect(GREETING_SYSTEM_PROMPT).toMatch(/项目名称[\s\S]*数字[\s\S]*技术细节[\s\S]*直接匹配判断句[\s\S]*篇幅长度[\s\S]*固定结尾/);
+
+    // 3. buildGreetingRevision 放松保留约束，避免迫使模型强行保留冗余内容
+    const rev = buildGreetingRevision('旧草稿', ['长度超限']);
+    const revPrompt = rev[1]!.content;
+    expect(revPrompt).toContain('保留必要的核心能力证据，并继续遵循本次写作风格');
+    expect(revPrompt).toContain('可以删除重复或非关键的信息');
+    expect(revPrompt).not.toContain('不遗漏原有核心匹配事实');
+
+    // 4. 修改项目名称/数字/技术细节/直接匹配判断句等纯表达规则不失效阶段 A 缓存
+    const p1: UserProfile = {
+      ...REGRESSION_PROFILES.compositeAi,
+      selectionRules: '优先突出 Agent 编排',
+      greetingRules: '省略具体项目名称，少用数字，不使用直接匹配判断句。',
+    };
+    const p2: UserProfile = {
+      ...p1,
+      greetingRules: '可使用具体项目名称，保留量化数字，展开技术细节，使用直接匹配判断句，固定结尾：“期待交流！”',
+    };
+    const eff1 = resolveGreetingConfig({ profile: p1 });
+    const eff2 = resolveGreetingConfig({ profile: p2 });
+    const jobHash = computeJobContentHash(baseJob);
+    const kA1 = buildAnalysisCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profile: p1,
+      config: llmConfig,
+      preferences: eff1.preferences,
+      selectionRules: eff1.effectiveSelectionRules,
+    });
+    const kA2 = buildAnalysisCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profile: p2,
+      config: llmConfig,
+      preferences: eff2.preferences,
+      selectionRules: eff2.effectiveSelectionRules,
+    });
+    expect(kA1).toBe(kA2);
+
+    const kB1 = buildGreetingCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profileId: p1.id,
+      config: llmConfig,
+      points: ['LangGraph 编排'],
+      effectiveRules: eff1.effectiveWritingRules,
+      preferences: eff1.preferences,
+      examples: [],
+    });
+    const kB2 = buildGreetingCacheKey({
+      jobFingerprint: baseJob.fingerprint,
+      jobContentHash: jobHash,
+      profileId: p2.id,
+      config: llmConfig,
+      points: ['LangGraph 编排'],
+      effectiveRules: eff2.effectiveWritingRules,
+      preferences: eff2.preferences,
+      examples: [],
+    });
+    expect(kB1).not.toBe(kB2);
   });
 });

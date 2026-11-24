@@ -62,6 +62,7 @@ export function evaluateGenerationCase(input: {
   const facts = result.greetingPoints.join('\n');
   const issues = checkGreetingDetailed(result.greeting, facts, {
     preferences: effective.preferences,
+    writingRules: effective.effectiveWritingRules,
     extraNotes: profile.extraNotes,
     jobTitle: job.title,
   });

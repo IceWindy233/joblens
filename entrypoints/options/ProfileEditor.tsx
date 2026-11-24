@@ -89,9 +89,6 @@ export function ProfileEditor({ existing, settings, apiKey, onDone }: Props) {
   const [expandedFactIdx, setExpandedFactIdx] = useState<number | null>(null);
   const [factsDraftPendingConfirm, setFactsDraftPendingConfirm] = useState(false);
   const [extraNotes, setExtraNotes] = useState(existing?.extraNotes ?? '');
-  const [targetRoles, setTargetRoles] = useState(existing?.targetRoles.join('、') ?? '');
-  const [locations, setLocations] = useState(existing?.preferredLocations.join('、') ?? '');
-  const [salary, setSalary] = useState(existing?.salaryPreference ?? '');
   const [selectionRules, setSelectionRules] = useState(existing?.selectionRules ?? '');
   const [rules, setRules] = useState(existing?.greetingRules ?? DEFAULT_GREETING_RULES);
   const globalBaselinePrefs = useMemo(
@@ -174,8 +171,6 @@ export function ProfileEditor({ existing, settings, apiKey, onDone }: Props) {
         setFactsDraftPendingConfirm(true);
         setExpandedFactIdx(null);
       }
-      if (draft.targetRoles.length) setTargetRoles(draft.targetRoles.join('、'));
-      if (draft.preferredLocations.length) setLocations(draft.preferredLocations.join('、'));
       setMsg({
         kind: 'warn',
         text: '已生成档案摘要与结构化事实草稿，请核对经历类型与能力边界后再点击“保存档案”。',
@@ -221,9 +216,6 @@ export function ProfileEditor({ existing, settings, apiKey, onDone }: Props) {
       summary,
       facts,
       extraNotes,
-      targetRoles: parseListInput(targetRoles),
-      preferredLocations: parseListInput(locations),
-      salaryPreference: salary,
       selectionRules,
       greetingRules: rules,
       greetingPreferences:
@@ -396,26 +388,6 @@ export function ProfileEditor({ existing, settings, apiKey, onDone }: Props) {
                 onChange={(e) => setExtraNotes(e.target.value)}
               />
             </label>
-
-            <div className="grid-3">
-              <label className="field">
-                <span>目标岗位（逗号/顿号分隔）</span>
-                <input type="text" value={targetRoles} onChange={(e) => setTargetRoles(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>偏好地点</span>
-                <input type="text" value={locations} onChange={(e) => setLocations(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>期望薪资</span>
-                <input
-                  type="text"
-                  value={salary}
-                  onChange={(e) => setSalary(e.target.value)}
-                  placeholder="例：15-20K"
-                />
-              </label>
-            </div>
           </div>
         </div>
       )}

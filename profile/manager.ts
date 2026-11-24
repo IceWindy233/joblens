@@ -10,24 +10,25 @@ import type {
   RulePreferenceConflict,
   UserProfile,
 } from '../shared/types';
+import { DEFAULT_GREETING_POINTS } from '../shared/types';
 import { AppError } from '../shared/errors';
 import { isRecord } from '../shared/json';
 
 // Profile CRUD、三级规则解析、预设模板与数据迁移纯函数（存储 IO 在 storage/）。
 
 export const DEFAULT_GREETING_RULES = `不主动谈薪资、到岗时间等条件。
-固定结尾：“对贵司该岗位很感兴趣，希望有机会进一步沟通！”`;
+固定结尾：“对贵司该岗位很感兴趣，期待进一步沟通。”`;
 
 export const DEFAULT_GLOBAL_GREETING_RULES = '';
 
 export const DEFAULT_GREETING_PREFERENCES: GreetingPreferences = {
   preset: 'concise',
-  maxPoints: 4,
+  maxPoints: DEFAULT_GREETING_POINTS,
   allowGapExplanation: false,
   singleParagraph: true,
   allowLists: false,
   maxChars: 160,
-  targetLengthHint: '80–140',
+  targetLengthHint: '65–105',
   useExamples: true,
 };
 
@@ -43,18 +44,17 @@ export const GREETING_PRESETS: Record<GreetingPresetId, GreetingPreset> = {
   concise: {
     id: 'concise',
     label: '简洁自然',
-    description: '一段话直奔主题，突出最核心的匹配点，控制篇幅。',
-    rules: `突出与当前岗位最直接相关的核心能力，不复述整份简历，用自然、克制的职业口吻沟通。
-不主动谈薪资、到岗时间等条件。
-固定结尾：“对贵司该岗位很感兴趣，希望有机会进一步沟通！”`,
+    description: '先概括相关经历，再说明岗位需要的能力，用正式中文简短收尾。',
+    rules: `省略不必要的项目名称和零散数字，精简技术术语，不使用直接匹配判断句，用自然、克制的职业口吻沟通。
+${DEFAULT_GREETING_RULES}`,
     preferences: { ...DEFAULT_GREETING_PREFERENCES, preset: 'concise' },
   },
   technical: {
     id: 'technical',
     label: '技术详细',
-    description: '允许较充裕篇幅与分段，展开技术栈、架构设计与工程实践细节。',
-    rules: `重点展开与岗位匹配的核心技术架构、工程实现和关键技术选型细节，可保留必要的技术术语。
-允许分段组织核心亮点，不必过度压缩技术细节。
+    description: '允许较充裕篇幅与分段，展开技术细节、架构设计与技术术语。',
+    rules: `可保留具体项目名称并展开关键技术细节、架构实现与技术选型术语。
+允许分段组织核心亮点，可用直接匹配判断句点明核心技术契合点。
 固定结尾：“对贵司该岗位很感兴趣，期待有机会交流技术细节！”`,
     preferences: {
       preset: 'technical',
@@ -70,9 +70,9 @@ export const GREETING_PRESETS: Record<GreetingPresetId, GreetingPreset> = {
   achievement: {
     id: 'achievement',
     label: '突出项目成果',
-    description: '聚焦业务问题、实际交付角色和可验证的项目成果与指标。',
-    rules: `优先围绕岗位最关注的项目交付场景，讲清解决的问题、个人实际承担的职责和已验证的成果。
-尽量将相近项目经验整合成有说服力的表达，避免流水账式罗列。
+    description: '保留项目名称与关键数字指标，聚焦交付角色与可验证成果。',
+    rules: `可保留具体项目名称与已验证量化数字，讲清解决的问题、承担职责与交付成果。
+可用直接匹配判断句收束优势，避免流水账式逐项罗列。
 固定结尾：“对贵司该岗位很感兴趣，希望能进一步沟通项目细节！”`,
     preferences: {
       preset: 'achievement',
@@ -111,9 +111,6 @@ export const VERSIONED_FIELDS = [
   'summary',
   'facts',
   'extraNotes',
-  'targetRoles',
-  'preferredLocations',
-  'salaryPreference',
   'selectionRules',
   'greetingRules',
   'greetingPreferences',
@@ -193,12 +190,6 @@ function normalize<T extends ProfilePatch>(p: T): T {
   if (out.greetingPreferences !== undefined) {
     out.greetingPreferences = normalizeGreetingPreferences(out.greetingPreferences);
   }
-  if (out.targetRoles !== undefined) out.targetRoles = cleanList(out.targetRoles);
-  if (out.preferredLocations !== undefined) out.preferredLocations = cleanList(out.preferredLocations);
-  if (out.salaryPreference !== undefined) {
-    const s = out.salaryPreference.trim();
-    out.salaryPreference = s || undefined;
-  }
   return out;
 }
 
@@ -244,7 +235,6 @@ function sameValue(a: unknown, b: unknown): boolean {
 export function updateProfile(old: UserProfile, patch: ProfilePatch, now = new Date()): UserProfile {
   const n = normalize(patch);
   const next: UserProfile = { ...old, ...n };
-  if ('salaryPreference' in n && n.salaryPreference === undefined) delete next.salaryPreference;
   if ('selectionRules' in n && n.selectionRules === undefined) delete next.selectionRules;
   if ('greetingPreferences' in n && n.greetingPreferences === undefined) delete next.greetingPreferences;
   if ('facts' in n && n.facts === undefined) delete next.facts;
@@ -396,9 +386,9 @@ export function applyRuleTextDirectives(base: GreetingPreferences, ruleText: str
 }
 
 const PURE_WRITING_LINE_RE =
-  /(?:字数|不超过|控制在|最多\s*\d+\s*字|以内|不限字数|分段|多段|一段话|单段|换行|分点|列表|逐条|编号|固定结尾|结尾\s*[:：]|不(?:主动)?谈薪|到岗时间|口吻|语气|客套话|样例)/;
+  /(?:字数|篇幅|不超过|控制在|最多\s*\d+\s*字|以内|不限字数|分段|多段|一段话|单段|换行|分点|列表|逐条|编号|固定结尾|结尾\s*[:：]|不(?:主动)?谈薪|到岗时间|口吻|语气|客套话|样例|项目名(?:称)?|量化数字|少用数字|不用数字|保留数字|技术细节|技术术语|技术名词|匹配判断句)/;
 const SELECTION_SIGNAL_RE =
-  /(?:优先|突出|强调|侧重|重点|岗位|项目|经历|事实|技术|选材|素材|匹配点|短板|差距|缺口|不足|了解|参与|主导|业务|架构|工程|研发|测试|评测|安全|Agent|RAG|FDE)/i;
+  /(?:优先|重点|侧重|强调|只选|必须包含|多选|选材|素材|匹配点|短板|差距|缺口|不足|哪类岗位|某段经历|生产经验|个人项目|开源项目|工作经历|Agent|RAG|FDE|全栈|后端|前端|安全|研发效能|自动化测试)/i;
 
 /**
  * 将混合规则文本拆分为：
@@ -571,14 +561,11 @@ export function resolveGreetingConfig(input: ResolveGreetingConfigInput): Effect
 
   const gSel = splitSelectionAndWritingRules(globalRules).selectionLines.join('\n');
   const pSel = splitSelectionAndWritingRules(profileRules).selectionLines.join('\n');
-  const tSel = splitSelectionAndWritingRules(temporaryRule).selectionLines.join('\n');
-
   const selectionSections: string[] = [];
   const mergedGlobalSel = [globalSelection, gSel].filter(Boolean).join('\n');
   const mergedProfileSel = [profileSelection, pSel].filter(Boolean).join('\n');
   if (mergedGlobalSel) selectionSections.push(`[全局选材偏好]\n${mergedGlobalSel}`);
   if (mergedProfileSel) selectionSections.push(`[当前档案选材规则（覆盖全局）]\n${mergedProfileSel}`);
-  if (tSel) selectionSections.push(`[本次补充选材要求]\n${tSel}`);
 
   return {
     globalRules,
@@ -628,22 +615,16 @@ export function importGreetingRulesConfig(
 }
 
 /**
- * 无损迁移老版本档案：
- * - 完整保留已保存的 greetingRules、summary、extraNotes、version 等字段；
- * - 规范化可选新字段（facts / greetingPreferences），绝不用默认模板覆盖用户内容。
+ * 读取档案时提取当前字段，保留原文、事实、写作配置和版本。
  */
 export function migrateProfile(raw: UserProfile): UserProfile {
   const migrated: UserProfile = {
-    ...raw,
+    id: raw.id,
     name: typeof raw.name === 'string' ? raw.name : '',
     resumeFileName: typeof raw.resumeFileName === 'string' ? raw.resumeFileName : '',
     resumeText: typeof raw.resumeText === 'string' ? raw.resumeText : '',
     summary: typeof raw.summary === 'string' ? raw.summary : '',
     extraNotes: typeof raw.extraNotes === 'string' ? raw.extraNotes : '',
-    targetRoles: Array.isArray(raw.targetRoles) ? cleanList(raw.targetRoles.filter((x): x is string => typeof x === 'string')) : [],
-    preferredLocations: Array.isArray(raw.preferredLocations)
-      ? cleanList(raw.preferredLocations.filter((x): x is string => typeof x === 'string'))
-      : [],
     greetingRules: typeof raw.greetingRules === 'string' ? raw.greetingRules : '',
     version: typeof raw.version === 'number' && Number.isFinite(raw.version) ? raw.version : 1,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : '',

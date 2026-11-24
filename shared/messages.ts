@@ -49,6 +49,7 @@ export function isJob(v: unknown): v is Job {
     isOptStr(v.location) &&
     isStr(v.description) &&
     v.description.length > 0 &&
+    (v.descriptionTruncated === undefined || typeof v.descriptionTruncated === 'boolean') &&
     isStr(v.fingerprint) &&
     v.fingerprint.length > 0 &&
     isStr(v.capturedAt)

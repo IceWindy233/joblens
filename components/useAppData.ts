@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { browser } from 'wxt/browser';
 import type { AppSettings, UserProfile } from '../shared/types';
-import {
-  DEFAULT_SETTINGS,
-  hasOriginPermission,
-  loadApiKeyInfo,
-  loadProfiles,
-  loadSettings,
-  onStorageChanged,
-} from '../storage';
+import { DEFAULT_SETTINGS, loadApiKeyInfo, loadProfiles, loadSettings, onStorageChanged } from '../storage';
+import { getPlatform } from '../platform';
 
 export interface AppData {
   loaded: boolean;
@@ -34,7 +27,7 @@ export function useAppData(): AppData {
 
   const reload = useCallback(async () => {
     const [profiles, settings, keyInfo] = await Promise.all([loadProfiles(), loadSettings(), loadApiKeyInfo()]);
-    const hasPermission = settings.llm ? await hasOriginPermission(settings.llm.baseURL) : false;
+    const hasPermission = settings.llm ? await getPlatform().hasOriginPermission(settings.llm.baseURL) : false;
     setState({
       loaded: true,
       profiles,
@@ -47,14 +40,11 @@ export function useAppData(): AppData {
 
   useEffect(() => {
     void reload();
-    const off = onStorageChanged(() => void reload());
-    const onPerm = () => void reload();
-    browser.permissions.onAdded.addListener(onPerm);
-    browser.permissions.onRemoved.addListener(onPerm);
+    const offStorage = onStorageChanged(() => void reload());
+    const offPermissions = getPlatform().onPermissionsChanged(() => void reload());
     return () => {
-      off();
-      browser.permissions.onAdded.removeListener(onPerm);
-      browser.permissions.onRemoved.removeListener(onPerm);
+      offStorage();
+      offPermissions();
     };
   }, [reload]);
 

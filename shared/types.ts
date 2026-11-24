@@ -11,6 +11,8 @@ export interface Job {
   salary?: string;
   location?: string;
   description: string;
+  /** JD 正文被页面折叠、尚未完整读取（BOSS APP 详情页需用户点“查看更多”展开） */
+  descriptionTruncated?: boolean;
   fingerprint: string;
   capturedAt: string;
 }
@@ -74,12 +76,14 @@ export interface RulePreferenceConflict {
   resolvedValue: string;
 }
 
+export const DEFAULT_GREETING_POINTS = 2;
+
 export interface GreetingPreferences {
   /** 预设风格模板标识（仅作可编辑模板标识，不构成硬编码限制） */
   preset?: GreetingPresetId;
   /** 同层自由文本规则与结构化参数冲突时的优先策略（默认 'text'：文字规则优先） */
   conflictResolution?: RuleConflictResolution;
-  /** 阶段 A 挑选匹配素材条数上限（1~8，默认 4） */
+  /** 阶段 A 挑选匹配素材条数上限（1~8，默认 2） */
   maxPoints: number;
   /** 是否允许在素材与打招呼语中主动提及或解释能力差距（默认 false） */
   allowGapExplanation: boolean;
@@ -120,9 +124,6 @@ export interface UserProfile {
   /** 结构化档案事实清单（保留经历类型、参与程度、能力证据与限制条件） */
   facts?: ProfileFact[];
   extraNotes: string;
-  targetRoles: string[];
-  preferredLocations: string[];
-  salaryPreference?: string;
   /** 选材与岗位重点规则（影响阶段 A 匹配选材，并纳入阶段 A 缓存键） */
   selectionRules?: string;
   greetingRules: string;
@@ -153,15 +154,18 @@ export interface AppSettings {
 export type Recommendation = 'recommended' | 'consider' | 'not_recommended';
 
 export type RequirementCategory = 'core' | 'general' | 'bonus' | 'focus' | 'hard';
-export type EvidenceStatus = 'matched' | 'partial' | 'not_shown' | 'confirmed_lacking';
+export type EvidenceStatus = 'matched' | 'transferable' | 'partial' | 'not_shown' | 'confirmed_lacking';
+export type MatchPointDimension = 'capability' | 'qualification' | 'preference';
 
 export interface MatchPoint {
   requirement: string;
   evidence: string;
   /** 任职要求类别：核心要求 / 一般要求 / 加分项 / 实际工作重点 / 硬性条件 */
   category?: RequirementCategory;
-  /** 证据状态：已匹配 / 部分匹配 / 简历未体现 / 已确认不具备 */
+  /** 证据状态：已匹配 / 经验可迁移 / 部分匹配 / 简历未体现 / 已确认不具备 */
   status?: EvidenceStatus;
+  /** 维度分类：职业能力 / 资格条件 / 个人意愿与工作条件 */
+  dimension?: MatchPointDimension;
 }
 
 export type GreetingIssueKind = 'structure' | 'fact' | 'style';
@@ -171,17 +175,36 @@ export interface GreetingCheckIssue {
   message: string;
 }
 
+export interface GreetingContext {
+  /** 这份职位希望解决的主要工作问题。 */
+  focus: string;
+  /** 与选中的档案事实按相同顺序对应的岗位要求。 */
+  requirements: string[];
+}
+
 export interface AnalysisResult {
   jobFingerprint: string;
   profileId: string;
   profileVersion: number;
-  matchScore: number;
+  /** AI 根据 JD 和档案综合判断的参考分，暂无分数时为 null。 */
+  matchScore: number | null;
+  /** 有证据的能力主题占比；没有能力要求时为 null。 */
+  capabilityCoverage?: number | null;
+  /** 按证据状态统计能力主题。 */
+  capabilityEvidence?: Record<EvidenceStatus, number>;
   recommendation: Recommendation;
   summary: string;
+  /** 优先显示的投递决策因素。 */
+  decisionFactors?: MatchPoint[];
   strengths: MatchPoint[];
   gaps: MatchPoint[];
-  /** 阶段 A 选出的档案事实（条数上限由有效配置决定，默认 4 条）。 */
+  /** JD 明确列出的筛选条件，每个条件带独立的证据状态。 */
+  hardRequirements?: MatchPoint[];
+  /** 其他需确认的条件、能力或偏好。 */
+  toConfirm?: MatchPoint[];
+  /** 阶段 A 选出的档案事实（条数上限由有效配置决定，默认 2 条）。 */
   greetingPoints: string[];
+  greetingContext?: GreetingContext;
   greeting: string;
   /** 定向重写后仍未通过的本地检查项；正常为空 */
   greetingIssues: string[];
@@ -191,6 +214,8 @@ export interface AnalysisResult {
   effectiveRules?: string;
   /** 生成该结果时实际生效的校验与选材参数 */
   effectivePreferences?: GreetingPreferences;
+  /** 生成时发送的历史样例，首条为主要样例。 */
+  greetingStyleExamples?: GreetingStyleExample[];
   /** 阶段 A 匹配分析缓存键（不含阶段 B 纯写作规则） */
   analysisCacheKey?: string;
   /** 阶段 B 打招呼语缓存键 */
@@ -218,6 +243,8 @@ export interface GreetingExample {
   createdAt: string;
 }
 
+export type GreetingStyleExample = Pick<GreetingExample, 'jobFingerprint' | 'jobTitle' | 'company'>;
+
 export const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
   recommended: '推荐投递',
   consider: '可以考虑',
@@ -234,6 +261,7 @@ export const REQUIREMENT_CATEGORY_LABEL: Record<RequirementCategory, string> = {
 
 export const EVIDENCE_STATUS_LABEL: Record<EvidenceStatus, string> = {
   matched: '证据充分',
+  transferable: '经验可迁移',
   partial: '部分匹配',
   not_shown: '简历未体现',
   confirmed_lacking: '已确认不具备',

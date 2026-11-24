@@ -41,6 +41,17 @@ interface Props {
 
 const PRESET_ORDER: readonly GreetingPresetId[] = ['concise', 'technical', 'achievement', 'custom'];
 
+const STYLE_QUICK_RULES = [
+  { label: '保留项目名', line: '可使用具体项目名称。', opposite: '省略具体项目名称，聚焦能力本身。' },
+  { label: '省略项目名', line: '省略具体项目名称，聚焦能力本身。', opposite: '可使用具体项目名称。' },
+  { label: '保留数字指标', line: '保留已验证的量化数字与关键指标。', opposite: '少用数字，仅在必要时保留核心指标。' },
+  { label: '少用数字', line: '少用数字，仅在必要时保留核心指标。', opposite: '保留已验证的量化数字与关键指标。' },
+  { label: '展开技术细节', line: '展开核心技术细节与关键技术术语。', opposite: '精简技术细节，减少生僻技术术语堆砌。' },
+  { label: '精简技术术语', line: '精简技术细节，减少生僻技术术语堆砌。', opposite: '展开核心技术细节与关键技术术语。' },
+  { label: '加匹配判断句', line: '使用直接匹配判断句点明岗位契合点。', opposite: '不使用直接匹配判断句，仅客观陈述事实。' },
+  { label: '不用匹配判断句', line: '不使用直接匹配判断句，仅客观陈述事实。', opposite: '使用直接匹配判断句点明岗位契合点。' },
+] as const;
+
 export function formatPreferencesSummary(prefs: GreetingPreferences): string {
   const parts = [
     `最多 ${prefs.maxPoints} 条素材`,
@@ -199,7 +210,7 @@ export function GreetingRulesConfig({
       )}
 
       <label className="field">
-        <span>写作表达与格式规则（阶段 B 生效，控制语气、篇幅、段落与固定结尾）</span>
+        <span>写作表达与格式规则（阶段 B 生效，控制项目名、数字、技术细节、匹配判断句、篇幅与固定结尾）</span>
         <textarea
           aria-label={textareaAriaLabel}
           rows={5}
@@ -208,6 +219,28 @@ export function GreetingRulesConfig({
           onChange={(e) => onRulesChange(e.target.value)}
         />
       </label>
+
+      <div className="row wrap" style={{ gap: 6 }}>
+        <span className="muted">快捷写入规则：</span>
+        {STYLE_QUICK_RULES.map((item) => {
+          const lines = rules.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+          const active = lines.includes(item.line);
+          return (
+            <button
+              key={item.label}
+              type="button"
+              className={`chip ${active ? 'active' : ''}`}
+              onClick={() => {
+                const filtered = lines.filter((l) => l !== item.line && l !== item.opposite);
+                const next = active ? filtered : [...filtered, item.line];
+                onRulesChange(next.join('\n'));
+              }}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
 
       {conflicts.length > 0 && (
         <div className="notice warn stack-sm">

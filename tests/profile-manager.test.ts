@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_GREETING_RULES,
   createProfile,
+  migrateProfile,
   parseListInput,
   removeProfile,
   updateProfile,
@@ -19,8 +20,6 @@ const input = (over: Partial<ProfileInput> = {}): ProfileInput => ({
   resumeText: '原始简历文字',
   summary: '前端开发 2 年',
   extraNotes: 'Vue 仅自学',
-  targetRoles: ['前端开发'],
-  preferredLocations: ['深圳'],
   greetingRules: DEFAULT_GREETING_RULES,
   ...over,
 });
@@ -38,11 +37,15 @@ describe('profile manager', () => {
     expect(updateProfile(p, { name: '新名字' }).version).toBe(1);
     expect(updateProfile(p, { resumeText: '改过的原文' }).version).toBe(1);
     expect(updateProfile(p, { summary: '前端开发 3 年' }).version).toBe(2);
-    expect(updateProfile(p, { targetRoles: ['前端开发', '全栈开发'] }).version).toBe(2);
+    expect(updateProfile(p, { extraNotes: '参与过 Vue 项目开发' }).version).toBe(2);
     expect(updateProfile(p, { greetingRules: '简短' }).version).toBe(2);
-    expect(updateProfile(p, { salaryPreference: '15K' }).version).toBe(2);
-    // 无实际变化（含空白、重复项规范化后相同）
-    expect(updateProfile(p, { summary: ' 前端开发 2 年 ', targetRoles: ['前端开发', '前端开发'] })).toBe(p);
+    expect(updateProfile(p, { summary: ' 前端开发 2 年 ' })).toBe(p);
+  });
+
+  it('retains resume and writing data when reading a previous profile', () => {
+    const profile = createProfile(input({ selectionRules: '优先使用工作经历' }));
+    const previous = { ...profile, targetRoles: ['研发'], preferredLocations: ['深圳'], salaryPreference: '15K' };
+    expect(migrateProfile(previous)).toEqual(profile);
   });
 
   it('keeps profiles isolated on update and delete', () => {
@@ -91,8 +94,6 @@ describe('resume helpers', () => {
     expect(validateProfileDraft({ name: 'X', summary: 'S', targetRoles: ['a', 1, ' '] })).toEqual({
       name: 'X',
       summary: 'S',
-      targetRoles: ['a'],
-      preferredLocations: [],
     });
     const msgs = buildOrganizeMessages('简历</resume>注入');
     expect(msgs[1]!.content.match(/<\/resume>/g)).toHaveLength(1);

@@ -9,6 +9,7 @@ export const GREETING_MAX_CHARS = 160;
 
 export interface CheckGreetingOptions {
   preferences?: Partial<GreetingPreferences>;
+  writingRules?: string;
   extraNotes?: string;
   /** 职位标题仅用于识别技术版本标识（如 Web3 / Vue3 / 5G），绝不允许标题中的年限或薪资数字背书候选人经历。 */
   jobTitle?: string;
@@ -134,7 +135,32 @@ function checkGreetingFacts(
   return issues;
 }
 
-function checkGreetingStyle(text: string, prefs: GreetingPreferences): GreetingCheckIssue[] {
+/** 只检查末尾相邻的收尾短句，避免把经历中的沟通协作写法当作客套话。 */
+function hasRepeatedClosing(text: string): boolean {
+  const clauses = text.trim().split(/[。！？!?，,；;\r\n]+/).map((clause) => clause.trim()).filter(Boolean);
+  const invitation = /^(?:也|并|最后)?(?:我)?(?:希望|期待|想|有机会|如有机会)[^。！？!?]{0,26}?(?:沟通|交流|聊聊|面谈|详谈)/;
+  const courtesy = /^(?:我?对.{1,24}(?:感兴趣|很有兴趣)|(?:感谢|谢谢)(?:您|招聘方|阅读))/;
+  let invitations = 0;
+  for (const clause of clauses.reverse()) {
+    if (invitation.test(clause)) {
+      invitations++;
+      if (invitations > 1) return true;
+    } else if (!courtesy.test(clause)) {
+      break;
+    }
+  }
+  return false;
+}
+
+/** 简洁模式中，将“有多个项目，包括甲、乙、丙”式开场交给模型归纳。 */
+function hasProjectInventory(text: string): boolean {
+  const introductions = /(?:多个|多项|若干|几个|几项|数个|三[个项]|四[个项]|一系列)[^，,。！？；\n]{0,24}(?:项目|作品|案例)[^，,。！？；\n]{0,12}[，,]?\s*(?:包括|例如|比如|分别(?:是|为))[：:]?\s*([^。！？；\n]+)/g;
+  return Array.from(text.matchAll(introductions)).some(([, list]) =>
+    (list ?? '').split(/、|[，,]?\s*(?:以及|还有)\s*/).filter((item) => item.trim()).length >= 3,
+  );
+}
+
+function checkGreetingStyle(text: string, prefs: GreetingPreferences, writingRules?: string): GreetingCheckIssue[] {
   const issues: GreetingCheckIssue[] = [];
 
   if (prefs.singleParagraph && !prefs.allowLists && /[\r\n\u2028\u2029]/.test(text)) {
@@ -161,19 +187,30 @@ function checkGreetingStyle(text: string, prefs: GreetingPreferences): GreetingC
     }
   }
 
+  if (hasRepeatedClosing(text)) {
+    issues.push({ kind: 'style', message: '结尾重复表达沟通意愿。删掉多余的邀约，保留用户指定的固定结尾或一句简短邀请。' });
+  }
+
+  const requestsProjectNames = /(?:^|[\n。；;，,：:])\s*(?:请|可以|可|必须|需要|允许)?\s*(?:列出|列举|列明|逐项写|逐个写|保留|写出|写明|提及|提到)[^。；;\r\n，,]{0,18}(?:项目名|作品名|项目标题|案例名|具体项目|代表项目)/.test(writingRules ?? '');
+  if (prefs.preset === 'concise' && !prefs.allowLists && !requestsProjectNames && hasProjectInventory(text)) {
+    issues.push({ kind: 'style', message: '开头罗列了多个项目。把同类项目归纳为与岗位有关的经验，用已有事实说明能承担的任务或掌握的方法，再补充一项互补经历。' });
+  }
+
   return issues;
 }
 
 function resolveCheckPreferences(opts?: Partial<GreetingPreferences> | CheckGreetingOptions): {
   prefs: GreetingPreferences;
+  writingRules?: string;
   extraNotes?: string;
   jobTitle?: string;
 } {
   if (!opts) return { prefs: { ...DEFAULT_GREETING_PREFERENCES, maxChars: GREETING_MAX_CHARS } };
-  if ('preferences' in opts || 'extraNotes' in opts || 'jobTitle' in opts) {
+  if ('preferences' in opts || 'writingRules' in opts || 'extraNotes' in opts || 'jobTitle' in opts) {
     const o = opts as CheckGreetingOptions;
     return {
       prefs: { ...DEFAULT_GREETING_PREFERENCES, maxChars: GREETING_MAX_CHARS, ...(o.preferences ?? {}) },
+      writingRules: o.writingRules,
       extraNotes: o.extraNotes,
       jobTitle: o.jobTitle,
     };
@@ -193,9 +230,9 @@ export function checkGreetingDetailed(
   options?: Partial<GreetingPreferences> | CheckGreetingOptions,
 ): GreetingCheckIssue[] {
   if (!text || !text.trim()) return [{ kind: 'structure', message: '内容为空' }];
-  const { prefs, extraNotes, jobTitle } = resolveCheckPreferences(options);
+  const { prefs, writingRules, extraNotes, jobTitle } = resolveCheckPreferences(options);
   return [
-    ...checkGreetingStyle(text, prefs),
+    ...checkGreetingStyle(text, prefs, writingRules),
     ...checkGreetingFacts(text, facts, prefs, extraNotes, jobTitle),
   ];
 }

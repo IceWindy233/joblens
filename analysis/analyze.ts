@@ -3,8 +3,10 @@ import type {
   AppSettings,
   EffectiveGreetingConfig,
   GreetingCheckIssue,
+  GreetingContext,
   GreetingExample,
   GreetingPreferences,
+  GreetingStyleExample,
   Job,
   LLMConfig,
   UserProfile,
@@ -15,6 +17,7 @@ import { isJob } from '../shared/messages';
 import { cyrb53, squashWhitespace } from '../shared/text';
 import { chatCompletion, type ChatMessage } from '../llm/client';
 import { resolveGreetingConfig } from '../profile/manager';
+import { calibrateMatchAnalysis, type MatchAssessment } from './calibrate';
 import {
   ANALYSIS_PROMPT_VERSION,
   GREETING_PROMPT_VERSION,
@@ -22,7 +25,7 @@ import {
   buildGreetingMessages,
   buildGreetingRevision,
 } from './prompts';
-import { validateAnalysisPayload, type AnalysisPayload } from './schema';
+import { validateAnalysisPayload } from './schema';
 import { checkGreetingDetailed, cleanGreeting } from './greeting';
 import { selectGreetingExamples } from './greeting-examples';
 
@@ -36,7 +39,7 @@ export interface AnalyzeInput {
   signal?: AbortSignal;
   /** 可选全局设置（用于合并全局规则与偏好） */
   settings?: Partial<AppSettings>;
-  /** 可选单次生成补充要求 */
+  /** 仅用于本次打招呼语撰写的补充要求。 */
   temporaryRule?: string;
   /** 可选单次偏好覆盖 */
   temporaryPreferences?: Partial<GreetingPreferences>;
@@ -57,7 +60,7 @@ export interface CacheKeyOptions {
   promptVersion?: string;
 }
 
-export interface MatchAnalysisResult extends AnalysisPayload {
+export interface MatchAnalysisResult extends MatchAssessment {
   jobFingerprint: string;
   jobContentHash: string;
   profileId: string;
@@ -70,6 +73,7 @@ export interface MatchAnalysisResult extends AnalysisPayload {
 export interface GenerateGreetingInput {
   job: Job;
   points: string[];
+  greetingContext?: GreetingContext;
   profile: UserProfile;
   examples: GreetingExample[];
   config: LLMConfig;
@@ -89,6 +93,7 @@ export interface GenerateGreetingOutput {
   effectivePreferences: GreetingPreferences;
   greetingCacheKey: string;
   selectedExamplesCount: number;
+  greetingStyleExamples: GreetingStyleExample[];
   model: string;
   createdAt: string;
 }
@@ -127,9 +132,6 @@ export function profileFactsFingerprint(profile: UserProfile): string {
       summary: profile.summary,
       facts: profile.facts ?? [],
       extraNotes: profile.extraNotes,
-      targetRoles: profile.targetRoles,
-      preferredLocations: profile.preferredLocations,
-      salaryPreference: profile.salaryPreference ?? '',
     }),
   );
 }
@@ -177,12 +179,13 @@ export function buildGreetingCacheKey(input: {
   profileId: string;
   config: LLMConfig;
   points: string[];
+  greetingContext?: GreetingContext;
   effectiveRules: string;
   preferences: GreetingPreferences;
   examples: GreetingExample[];
 }): string {
   const contentHash = input.jobContentHash ?? (input.job ? computeJobContentHash(input.job) : '');
-  const pointsHash = cyrb53(JSON.stringify(input.points));
+  const pointsHash = cyrb53(JSON.stringify([input.points, input.greetingContext]));
   const rulesHash = cyrb53(
     JSON.stringify({
       effectiveRules: input.effectiveRules,
@@ -257,11 +260,15 @@ export async function analyzeJobMatch(
   if (!isJob(job)) throw new AppError('PROFILE_INVALID', '当前职位数据不完整');
   if (!profile.summary.trim()) throw new AppError('PROFILE_INVALID', '当前档案摘要为空');
 
-  const effective = resolveEffectiveConfigFromInput(input);
+  const effective = resolveEffectiveConfigFromInput({ profile, settings: input.settings });
   const call = createLLMCaller(config, apiKey, signal, deps);
 
   const parsed = parseModelJSON(
-    await call(buildAnalysisMessages(job, profile, { effectiveConfig: effective }), true, 0.3),
+    await call(
+      buildAnalysisMessages(job, profile, { effectiveConfig: effective }),
+      true,
+      0.3,
+    ),
   );
   if (parsed === undefined) throw new AppError('LLM_BAD_OUTPUT');
   const v = validateAnalysisPayload(parsed, { maxGreetingPoints: effective.preferences.maxPoints });
@@ -269,10 +276,14 @@ export async function analyzeJobMatch(
     throw new AppError('LLM_BAD_OUTPUT', `模型返回格式无效：${v.errors.slice(0, 3).join('；')}`);
   }
 
+  const calibrated = calibrateMatchAnalysis(v.value, effective.preferences.allowGapExplanation, { job, profile }, {
+    maxPoints: effective.preferences.maxPoints,
+    prioritizeTasks: !effective.effectiveSelectionRules,
+  });
   const jobContentHash = computeJobContentHash(job);
 
   return {
-    ...v.value,
+    ...calibrated,
     jobFingerprint: job.fingerprint,
     jobContentHash,
     profileId: profile.id,
@@ -311,24 +322,23 @@ export async function generateGreetingOnly(
     effective.effectiveWritingRules,
     selected,
     effective.preferences,
+    input.greetingContext,
   );
 
   let greeting = cleanGreeting(await call(messages, false, 0.5));
-  let greetingIssueDetails = checkGreetingDetailed(greeting, candidateFacts, {
+  const checkOptions = {
     preferences: effective.preferences,
+    writingRules: effective.effectiveWritingRules,
     extraNotes: profile.extraNotes,
     jobTitle: job.title,
-  });
+  };
+  let greetingIssueDetails = checkGreetingDetailed(greeting, candidateFacts, checkOptions);
 
   if (greetingIssueDetails.length) {
     const issueMessages = greetingIssueDetails.map((d) => d.message);
     const revision = [...messages, ...buildGreetingRevision(greeting, issueMessages)];
     greeting = cleanGreeting(await call(revision, false, 0.5));
-    greetingIssueDetails = checkGreetingDetailed(greeting, candidateFacts, {
-      preferences: effective.preferences,
-      extraNotes: profile.extraNotes,
-      jobTitle: job.title,
-    });
+    greetingIssueDetails = checkGreetingDetailed(greeting, candidateFacts, checkOptions);
   }
 
   if (!greeting) throw new AppError('LLM_BAD_OUTPUT', '模型未返回打招呼语');
@@ -347,11 +357,13 @@ export async function generateGreetingOnly(
       profileId: profile.id,
       config,
       points,
+      greetingContext: input.greetingContext,
       effectiveRules: effective.effectiveWritingRules,
       preferences: effective.preferences,
       examples: selected,
     }),
     selectedExamplesCount: selected.length,
+    greetingStyleExamples: selected.map(({ jobFingerprint, jobTitle, company }) => ({ jobFingerprint, jobTitle, company })),
     model: config.model,
     createdAt: (deps.now?.() ?? new Date()).toISOString(),
   };
@@ -367,6 +379,7 @@ export async function analyzeJob(input: AnalyzeInput, deps: AnalyzeDeps = {}): P
     {
       job: input.job,
       points: match.greetingPoints,
+      greetingContext: match.greetingContext,
       profile: input.profile,
       examples: input.examples,
       config: input.config,
@@ -382,16 +395,23 @@ export async function analyzeJob(input: AnalyzeInput, deps: AnalyzeDeps = {}): P
 
   return {
     matchScore: match.matchScore,
+    capabilityCoverage: match.capabilityCoverage,
+    capabilityEvidence: match.capabilityEvidence,
     recommendation: match.recommendation,
     summary: match.summary,
+    decisionFactors: match.decisionFactors,
     strengths: match.strengths,
     gaps: match.gaps,
+    toConfirm: match.toConfirm,
+    hardRequirements: match.hardRequirements,
     greetingPoints: match.greetingPoints,
+    greetingContext: match.greetingContext,
     greeting: generated.greeting,
     greetingIssues: generated.greetingIssues,
     greetingIssueDetails: generated.greetingIssueDetails,
     effectiveRules: generated.effectiveRules,
     effectivePreferences: generated.effectivePreferences,
+    greetingStyleExamples: generated.greetingStyleExamples,
     analysisCacheKey: match.analysisCacheKey,
     greetingCacheKey: generated.greetingCacheKey,
     jobContentHash: match.jobContentHash,

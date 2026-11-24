@@ -2,12 +2,8 @@ import { useEffect, useState } from 'react';
 import type { AppSettings, LLMConfig } from '../../shared/types';
 import { toAppError } from '../../shared/errors';
 import { normalizeBaseURL, testConnection, validateBaseURL } from '../../llm/client';
-import {
-  requestOriginPermission,
-  saveApiKey,
-  setApiKeyPersistence,
-  updateSettings,
-} from '../../storage';
+import { saveApiKey, setApiKeyPersistence, updateSettings } from '../../storage';
+import { getPlatform } from '../../platform';
 import {
   IconCheck,
   IconEye,
@@ -59,7 +55,7 @@ export function ModelSettings({ settings, apiKey, apiKeyPersisted, hasPermission
 
   /** 权限申请必须在点击回调中最先调用，以保留用户手势。 */
   const withPermission = async (config: LLMConfig): Promise<boolean> => {
-    const granted = await requestOriginPermission(config.baseURL);
+    const granted = await getPlatform().requestOriginPermission(config.baseURL);
     if (!granted) setStatus({ kind: 'err', text: '未授予 API 主机访问权限，无法调用该模型服务' });
     return granted;
   };
@@ -192,12 +188,12 @@ export function ModelSettings({ settings, apiKey, apiKeyPersisted, hasPermission
         <ToggleSwitch
           checked={remember}
           onChange={setRemember}
-          label="在本机记住 API Key（浏览器重启后免重新输入）"
+          label={`在本机记住 API Key（${getPlatform().terms.rememberKeyHint}）`}
         />
         <span className="muted">
           {remember
-            ? '开启后将以明文保存在本机扩展存储中（网页脚本读不到，本机目录可读取），建议为 JobLens 单独创建带额度上限的 Key。点击“保存配置”生效。'
-            : '默认仅保存在本次浏览器会话中，重启后需重新填写。'}
+            ? `${getPlatform().terms.persistedKeyNote}，建议为 JobLens 单独创建带额度上限的 Key。点击“保存配置”生效。`
+            : getPlatform().terms.sessionKeyNote}
           {settings.llm && !hasPermission && ' 当前尚未获得该域名访问权限，请点击“保存配置”授权。'}
         </span>
       </div>
