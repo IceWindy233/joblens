@@ -11,8 +11,9 @@ android {
         // 保留 OCR 兜底所需的 AccessibilityService.takeScreenshot（API 30）
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // 与根目录 package.json 的 version 保持一致；versionCode 随每次发布递增
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     buildTypes {
