@@ -6,13 +6,18 @@
 
 ---
 
-JobLens 是一个 Chrome 侧边栏扩展（Manifest V3）。打开 BOSS 直聘职位页后，它会读取当前职位的 JD，结合你选择的简历档案调用 OpenAI 兼容的模型接口，给出：
+JobLens 有两种用法，共用同一套档案、规则、模型设置与分析逻辑：
+
+- **Chrome 侧边栏扩展**（Manifest V3）：打开 BOSS 直聘网页版职位页，侧边栏读取当前职位的 JD。
+- **Android 客户端**：在 BOSS 直聘 APP 里正常浏览职位，悬浮按钮识别当前职位，点按即出结果（见 [Android 客户端](#android-客户端预览)）。
+
+它结合你选择的简历档案调用 OpenAI 兼容的模型接口，给出：
 
 - **打招呼语**：围绕岗位关键任务撰写首条招聘消息，可编辑、复制、重写或保存为样例
 - **投递参考**：查看 AI 综合评分、投递重点和逐项证据
 
 > [!NOTE]
-> 插件**不会**自动发送消息、自动投递或批量操作；所有模型调用都只在你点击按钮时发生。
+> JobLens **不会**自动发送消息、自动投递或批量操作；所有模型调用都只在你点击按钮时发生。
 
 ## 功能特点
 
@@ -29,14 +34,14 @@ JobLens 是一个 Chrome 侧边栏扩展（Manifest V3）。打开 BOSS 直聘�
 
 ## 安装
 
-### 方式一：下载发布包（推荐）
+### 浏览器扩展：下载发布包（推荐）
 
 1. 在本仓库的 **Releases** 页面下载最新的 `joblens-x.y.z-chrome.zip` 并解压。
 2. Chrome 打开 `chrome://extensions`，打开右上角 **开发者模式**。
 3. 点击 **加载已解压的扩展程序**，选择解压后的文件夹（里面直接能看到 `manifest.json`）。
 4. 安装后会自动打开设置页。
 
-### 方式二：从源码构建
+### 浏览器扩展：从源码构建
 
 需要 Node.js ≥ 22.12 和 pnpm 11（可用 `corepack enable` 自动启用）。
 
@@ -51,6 +56,18 @@ pnpm build          # 产物在 dist/chrome-mv3
 > 更新代码后重新 `pnpm build`，在 `chrome://extensions` 点 JobLens 卡片上的刷新按钮，再**刷新已打开的 BOSS 页面**。
 
 要求 Chrome 116 及以上（侧边栏 API）；建议使用最新版 Chrome。
+
+### Android 客户端
+
+要求 Android 11 及以上，并已安装 BOSS 直聘 APP。
+
+1. 在 **Releases** 页面下载最新的 `joblens-x.y.z-android.apk`，在手机上打开安装（首次需允许浏览器或文件管理器“安装未知应用”）。
+2. 首次打开 JobLens 会进入设置中的 **权限与运行**，按提示逐项完成：开启无障碍服务（Android 13 及以上需先在“应用信息”右上角菜单中“允许受限设置”）、电池优化；小米/HyperOS 还需开启自启动并在多任务界面加锁。
+3. 在同一设置页配置模型连接和简历档案（与扩展相同，见下方“使用”）。
+4. 打开 BOSS 直聘浏览职位，左侧出现 JobLens 悬浮按钮即可使用。
+
+> [!IMPORTANT]
+> Releases 中的 APK 都使用同一个正式签名，新版本可直接覆盖安装。如果之前装过自行构建的调试版（签名不同），需要先卸载再安装，卸载会清空 App 内的档案与设置。
 
 ## 使用
 
@@ -108,7 +125,7 @@ pnpm build          # 产物在 dist/chrome-mv3
 - 只读：不点击、不滑动、不发送、不截图；离开 BOSS 时悬浮按钮自动隐藏。
 - 长 JD 在 BOSS 中默认折叠，悬浮按钮显示 `JD` 时请先点 BOSS 页面上的“查看更多”，展开后自动补全；也可按已读到的内容直接生成。
 - 需要开启「JobLens 职位助手」无障碍服务。设置中的“权限与运行”分区（首次打开 JobLens 时直接进入）逐项显示状态并一键跳转：无障碍服务（侧载安装在 Android 13+ 需先在“应用信息”中允许受限设置）、模型与档案、电池优化（小米/HyperOS 上即“省电策略：无限制”）；小米/HyperOS 还需开启自启动并在多任务界面加锁，否则系统会冻结后台的 JobLens，从桌面打开 BOSS 时悬浮按钮不出现。
-- 构建：`cd android && ./gradlew assembleDebug`（需要 JDK 17+、Android SDK platform 37、PATH 中有 pnpm）。
+- 从源码构建：`cd android && ./gradlew assembleDebug`（需要 JDK 17+、Android SDK platform 37、PATH 中有 pnpm），产物在 `android/app/build/outputs/apk/debug/`。
 
 架构、边界与真机验证结论见 [`docs/android/ARCHITECTURE.md`](docs/android/ARCHITECTURE.md)。
 
@@ -161,7 +178,7 @@ tests/                  # 单元测试、DOM 与节点树样本
 
 ```bash
 keytool -genkeypair -keystore joblens-release.keystore -alias joblens \
-  -keyalg RSA -keysize 2048 -validity 10000
+  -keyalg RSA -keysize 4096 -validity 10000
 base64 -i joblens-release.keystore | pbcopy   # 复制到剪贴板
 ```
 
