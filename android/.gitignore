@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+# 由 pnpm run build:android-web 生成
+app/src/main/assets/web/

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- DESIGN.md 的 canvas：页面底色与导航栏区域 -->
+    <color name="canvas">#F6F7F9</color>
+    <!-- 状态栏区域，与设置页顶部常驻栏（header-glass token）连成一体 -->
+    <color name="top_bar">#FFFFFF</color>
+    <bool name="light_system_bars">true</bool>
+</resources>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  不设置 packageNames：需要收到其他应用的窗口切换事件，才能在离开 BOSS 直聘时隐藏悬浮按钮。
+  服务代码只读取非 BOSS 事件的包名，不读取其文字内容。
+  不声明 canPerformGestures / canTakeScreenshot：不模拟点击或滑动，不截图。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_description"
+    android:notificationTimeout="100" />
