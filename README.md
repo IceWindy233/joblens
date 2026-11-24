@@ -19,6 +19,44 @@ JobLens 有两种用法，共用同一套档案、规则、模型设置与分析
 > [!NOTE]
 > JobLens **不会**自动发送消息、自动投递或批量操作；所有模型调用都只在你点击按钮时发生。
 
+## 功能演示
+
+> 截图均为演示：职位、简历档案和模型返回都是虚构数据；Android 截图中的职位页是模拟页面，实际使用时悬浮按钮出现在 BOSS 直聘 APP 里。
+
+### 浏览器扩展
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/images/extension-panel.png" alt="侧边栏：当前职位、AI 能力匹配分、投递建议与打招呼语"></td>
+    <td width="33%"><img src="docs/images/extension-details.png" alt="逐项分析：硬性条件、匹配优势、能力差距与待确认事项"></td>
+    <td width="33%"><img src="docs/images/extension-panel-dark.png" alt="侧边栏深色模式"></td>
+  </tr>
+  <tr>
+    <td align="center">匹配分、投递建议与打招呼语</td>
+    <td align="center">逐项分析：每条要求都附证据</td>
+    <td align="center">跟随系统的深色模式</td>
+  </tr>
+</table>
+
+<p align="center"><img src="docs/images/extension-settings.png" alt="设置页：全局写作风格、规则优先级与预设模板" width="88%"></p>
+<p align="center">设置页：档案、写作风格、模型连接集中管理，规则优先级一目了然</p>
+
+### Android 客户端
+
+<p align="center"><img src="docs/images/android-flow.png" alt="识别职位、点按分析、出分并复制打招呼语、查看详情"></p>
+<p align="center">识别到职位 → 点按悬浮按钮开始分析 → 出分并自动复制打招呼语 → 查看详情</p>
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/images/android-setup.png" alt="权限与运行：逐项检查无障碍服务、模型与档案、电池优化"></td>
+    <td width="67%"><img src="docs/images/android-dark.png" alt="Android 深色模式下的速览卡与详情面板"></td>
+  </tr>
+  <tr>
+    <td align="center">权限与运行：逐项检测、一键跳转</td>
+    <td align="center">深色模式下的速览卡与详情面板</td>
+  </tr>
+</table>
+
 ## 功能特点
 
 - **核心约束与个人偏好分层**：将“真实性、证据边界、结构化输出、数据隔离、不自动发消息”作为不可覆盖的内置约束；内置策略允许主动舍弃次要候选事实并将相同能力领域的项目合并表达；将选材数量、是否使用项目名称/数字/技术细节、是否使用直接匹配判断句、篇幅长度、段落/列表格式、是否解释能力缺口、语气和固定结尾开放为完全可定制的个人规则。
