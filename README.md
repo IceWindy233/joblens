@@ -107,7 +107,7 @@ pnpm build          # 产物在 dist/chrome-mv3
 
 - 只读：不点击、不滑动、不发送、不截图；离开 BOSS 时悬浮按钮自动隐藏。
 - 长 JD 在 BOSS 中默认折叠，悬浮按钮显示 `JD` 时请先点 BOSS 页面上的“查看更多”，展开后自动补全；也可按已读到的内容直接生成。
-- 需要开启「JobLens 职位助手」无障碍服务。设置中的“权限与运行”分区（首次打开 JobLens 时直接进入）逐项显示状态并一键跳转：无障碍服务（侧载安装在 Android 13+ 需先在“应用信息”中允许受限设置）、模型与档案、电池优化；小米/HyperOS 还需把省电策略设为“无限制”、开启自启动并在多任务界面加锁，否则系统会冻结后台的 JobLens，从桌面打开 BOSS 时悬浮按钮不出现。
+- 需要开启「JobLens 职位助手」无障碍服务。设置中的“权限与运行”分区（首次打开 JobLens 时直接进入）逐项显示状态并一键跳转：无障碍服务（侧载安装在 Android 13+ 需先在“应用信息”中允许受限设置）、模型与档案、电池优化（小米/HyperOS 上即“省电策略：无限制”）；小米/HyperOS 还需开启自启动并在多任务界面加锁，否则系统会冻结后台的 JobLens，从桌面打开 BOSS 时悬浮按钮不出现。
 - 构建：`cd android && ./gradlew assembleDebug`（需要 JDK 17+、Android SDK platform 37、PATH 中有 pnpm）。
 
 架构、边界与真机验证结论见 [`docs/android/ARCHITECTURE.md`](docs/android/ARCHITECTURE.md)。

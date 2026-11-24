@@ -34,7 +34,7 @@ class SetupCheck(
 
 /**
  * 权限与运行环境检查，由设置页“权限与运行”分区通过 NativeBridge 读取。能检测的直接检测；
- * 小米/HyperOS 的省电策略、自启动和多任务加锁没有公开接口，只能引导到对应设置页并由用户确认。
+ * 小米/HyperOS 的自启动和多任务加锁没有公开接口，只能引导到对应设置页并由用户确认。
  * 模型与档案是否就绪由设置页自己判断。
  */
 object SetupChecks {
@@ -121,44 +121,40 @@ object SetupChecks {
             ),
         )
 
+        // 小米/HyperOS 的“省电策略：无限制”就是系统的忽略电池优化，同一个开关，只列一项
         val ignoringBattery = context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
+        val xiaomi = isXiaomi()
+        val requestIgnore = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
         checks += SetupCheck(
             id = "battery",
-            title = "电池优化",
-            description = "关闭对 JobLens 的电池优化，减少系统在后台回收无障碍服务。",
+            title = if (xiaomi) "省电策略：无限制" else "电池优化",
+            description = if (xiaomi) {
+                "小米/HyperOS 会冻结后台应用，表现为从桌面打开 BOSS 时悬浮按钮不出现。把 JobLens 的省电策略设为“无限制”。"
+            } else {
+                "关闭对 JobLens 的电池优化，减少系统在后台回收无障碍服务。"
+            },
             state = if (ignoringBattery) CheckState.OK else CheckState.MISSING,
             required = false,
             actions = listOf(
-                CheckAction(
-                    "关闭电池优化",
-                    listOf(
-                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")),
-                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
-                    ),
-                ),
-            ),
-        )
-
-        if (isXiaomi()) {
-            checks += SetupCheck(
-                id = "miuiPower",
-                title = "省电策略：无限制",
-                description = "小米/HyperOS 会冻结后台应用，表现为从桌面打开 BOSS 时悬浮按钮不出现。把 JobLens 的省电策略设为“无限制”。",
-                state = CheckState.MANUAL,
-                required = false,
-                actions = listOf(
+                if (xiaomi) {
                     CheckAction(
-                        "打开省电策略",
+                        "设为无限制",
                         listOf(
+                            requestIgnore,
                             Intent()
                                 .setComponent(ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"))
                                 .putExtra("package_name", context.packageName)
                                 .putExtra("package_label", context.applicationInfo.loadLabel(context.packageManager)),
                             appDetails(context),
                         ),
-                    ),
-                ),
-            )
+                    )
+                } else {
+                    CheckAction("关闭电池优化", listOf(requestIgnore, Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)))
+                },
+            ),
+        )
+
+        if (xiaomi) {
             checks += SetupCheck(
                 id = "miuiAutostart",
                 title = "自启动",

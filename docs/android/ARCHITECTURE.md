@@ -87,8 +87,7 @@ flowchart LR
 |---|---|---|
 | 无障碍服务（必需） | `AccessibilityManager` 已启用列表 | 无障碍设置；应用信息（Android 13+ 侧载需“允许受限设置”） |
 | 模型与简历档案（必需） | 设置页自身数据：模型连接就绪、当前档案存在 | 切到“模型连接”或“简历档案”分区 |
-| 电池优化 | `PowerManager.isIgnoringBatteryOptimizations` | 系统确认框，失败时退回电池优化列表 |
-| 省电策略：无限制（仅小米/HyperOS） | 无接口，用户勾选“我已设置” | `com.miui.powerkeeper` 的应用省电策略页，失败时退回应用信息 |
+| 电池优化（小米/HyperOS 上显示为“省电策略：无限制”，两者是同一个开关） | `PowerManager.isIgnoringBatteryOptimizations` | 系统确认框；失败时退回电池优化列表（小米为 `com.miui.powerkeeper` 的应用省电策略页，再退回应用信息） |
 | 自启动（仅小米/HyperOS） | 无接口，用户勾选 | `com.miui.securitycenter` 的自启动管理，失败时退回应用信息 |
 | 多任务界面加锁（仅小米/HyperOS） | 无接口，用户勾选 | 仅文字说明 |
 | BOSS 直聘（必需） | 包是否安装 | — |
