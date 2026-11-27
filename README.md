@@ -21,9 +21,12 @@ JobLens 有两种用法，共用同一套档案、规则、模型设置与分析
 
 ## 功能演示
 
-> 截图均为演示：职位、简历档案和模型返回都是虚构数据；Android 截图中的职位页是模拟页面，实际使用时悬浮按钮出现在 BOSS 直聘 APP 里。
+> 以下演示动图与截图中的职位、简历档案和模型返回均为虚构数据；演示里的 BOSS 页面为模拟页面，实际使用时扩展运行在 BOSS 直聘网页版、悬浮按钮出现在 BOSS 直聘 APP 内。
 
 ### 浏览器扩展
+
+<p align="center"><img src="docs/images/extension-demo.gif" alt="浏览器扩展交互演示：识别职位、生成打招呼语、查看逐项分析、微调重写并复制" width="90%"></p>
+<p align="center">识别当前职位 → 一键生成匹配分与打招呼语 → 查看逐项证据 → 微调重写并复制</p>
 
 <table>
   <tr>
@@ -42,6 +45,9 @@ JobLens 有两种用法，共用同一套档案、规则、模型设置与分析
 <p align="center">设置页：档案、写作风格、模型连接集中管理，规则优先级一目了然</p>
 
 ### Android 客户端
+
+<p align="center"><img src="docs/images/android-demo.gif" alt="Android 客户端交互演示：点按悬浮按钮分析、速览卡出分并自动复制、展开详情面板" width="320"></p>
+<p align="center">点按悬浮按钮 → 速览卡出分并自动复制打招呼语 → 查看完整分析与逐项依据</p>
 
 <p align="center"><img src="docs/images/android-flow.png" alt="识别职位、点按分析、出分并复制打招呼语、查看详情"></p>
 <p align="center">识别到职位 → 点按悬浮按钮开始分析 → 出分并自动复制打招呼语 → 查看详情</p>
